@@ -1,5 +1,6 @@
 import express from 'express';
 import pg from 'pg';
+import { readFile } from 'fs/promises';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -191,4 +192,14 @@ app.use((error,req,res,next)=>{
 });
 app.use(express.static(path.join(__dirname,'public'),{extensions:['html']}));
 app.use((req,res)=>{if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});res.sendFile(path.join(__dirname,'public','index.html'));});
-app.listen(PORT,'0.0.0.0',()=>console.log(`dom-na-hvoinoy listening on ${PORT}`));
+async function startServer(){
+ if(pool){
+  const schema=await readFile(path.join(__dirname,'schema.sql'),'utf8');
+  await pool.query(schema);
+ }
+ app.listen(PORT,'0.0.0.0',()=>console.log(`dom-na-hvoinoy listening on ${PORT}`));
+}
+startServer().catch(()=>{
+ console.error('Database schema initialization failed.');
+ process.exit(1);
+});
