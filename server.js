@@ -16,6 +16,7 @@ const pool = process.env.DATABASE_URL ? new Pool({
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const sessions = new Map();
+const loginAttempts = new Map();
 const json = express.json({ limit: '256kb' });
 app.use(json);
 pool?.on('error', e => console.error('Unexpected PostgreSQL pool error', e.code || e.name));
@@ -28,9 +29,10 @@ function requireAdmin(req,res){ if(!isAdmin(req)){res.status(401).json({error:'�
 function isDate(v){if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(v))return false;const d=new Date(v+'T00:00:00Z');return Number.isFinite(d.valueOf())&&d.toISOString().slice(0,10)===v;}
 function nights(a,b){ if(!isDate(a)||!isDate(b))return 0;return Math.round((Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000); }
 function validRange(a,b){return nights(a,b)>0;}
+function isValidPrice(value,max=1000000){const n=Number(value); return Number.isFinite(n) && n >= 0 && n <= max; }
 async function transaction(work){const client=await pool.connect();try{await client.query('BEGIN');const result=await work(client);await client.query('COMMIT');return result;}catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}}
 async function lockBookingDates(client){await client.query("SELECT pg_advisory_xact_lock(hashtext('dom-na-hvoinoy-booking-dates'))");}
-function cookieHeader(req,token,maxAge){const secure=process.env.NODE_ENV==='production'||req.secure;return `hvoinaya_admin=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure?'; Secure':''}`;}
+function cookieHeader(req,token,maxAge){const secure=process.env.NODE_ENV==='production'||req.secure||req.headers['x-forwarded-proto']==='https';return `hvoinaya_admin=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure?'; Secure':''}`;}
 async function pricing(queryable=pool){ const r=await queryable.query("SELECT value FROM settings WHERE key='pricing'"); return r.rows[0]?.value || {weekday:23000,friday:30000,saturday:34000,dates:{}}; }
 function stayPrice(a,b,g,p,firstReferral=false){ let total=0; for(let d=new Date(a+'T00:00:00Z'),end=new Date(b+'T00:00:00Z');d<end;d.setUTCDate(d.getUTCDate()+1)){ const ds=d.toISOString().slice(0,10); const dow=d.getUTCDay(); let base=Number(p.dates?.[ds] ?? (dow===5?p.friday:dow===6?p.saturday:p.weekday)); total += base + Math.max(0,Number(g)-12)*1000 - (firstReferral?2000:0); } return Math.max(0,total); }
 async function balances(){ const q=await pool.query(`SELECT m.id, COALESCE(SUM(CASE WHEN l.kind='earned' THEN l.points WHEN l.kind IN ('deducted','reserved','spent') THEN -l.points WHEN l.kind='release' THEN l.points ELSE 0 END),0)::int balance FROM members m LEFT JOIN point_ledger l ON l.member_id=m.id GROUP BY m.id`); return Object.fromEntries(q.rows.map(x=>[x.id,x.balance])); }
@@ -46,10 +48,11 @@ app.post('/api/members',async(req,res)=>{
  const action=req.body?.action,ph=phone(req.body?.phone);
  if(!ph)return res.status(400).json({error:'Укажите корректный телефон'});
  if(action==='lookup'){
-  const q=await pool.query('SELECT * FROM members WHERE phone=$1',[ph]);
+  const q=await pool.query('SELECT id,name,phone,code FROM members WHERE phone=$1',[ph]);
   if(!q.rowCount)return res.status(404).json({error:'Участник не найден'});
-  const b=await balances(),guests=await invitedGuests(q.rows[0].id);
-  return res.json({...q.rows[0],balance:b[q.rows[0].id]||0,invitedGuests:guests});
+  const member=q.rows[0];
+  const b=await balances(),guests=await invitedGuests(member.id);
+  return res.json({id:member.id,name:member.name,phone:member.phone,code:member.code,balance:b[member.id]||0,invitedGuests:guests});
  }
  if(action==='join'){
   const name=String(req.body?.name||'').trim();
@@ -69,7 +72,7 @@ app.post('/api/bookings',async(req,res)=>{
  const booking=await transaction(async client=>{
   await lockBookingDates(client);
   const old=await client.query('SELECT id FROM bookings WHERE request_key=$1',[key]);
-  if(old.rowCount)return Object.assign(new Error('Эта заявка уже отправлена'),{status:409});
+  if(old.rowCount) throw Object.assign(new Error('Эта заявка уже отправлена'),{status:409});
   const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE status IN ('request','waitlist','confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1`,[arrival,departure]);
   let ref=null,first=false;
   if(code){const result=await client.query('SELECT id,phone FROM members WHERE code=$1',[String(code).trim().toUpperCase()]);const member=result.rows[0];if(member&&member.phone!==ph){ref=member.id;const previous=await client.query("SELECT 1 FROM bookings WHERE phone=$1 AND status<>'cancelled' LIMIT 1",[ph]);first=!previous.rowCount;}}
@@ -85,8 +88,25 @@ app.post('/api/bookings',async(req,res)=>{
 app.post('/api/admin/login',(req,res)=>{
  const configuredPhone=phone(process.env.OWNER_PHONE),submittedPhone=phone(req.body?.phone),password=process.env.OWNER_PASSWORD;
  if(!configuredPhone||!password)return res.status(503).json({error:'Вход владельца не настроен'});
+ const key=`${req.ip||'unknown'}:${submittedPhone||'unknown'}`;
+ const now=Date.now();
+ const current=loginAttempts.get(key)||{count:0,blockedUntil:0};
+ if(current.blockedUntil>now){
+  return res.status(429).json({error:'Слишком много попыток входа. Попробуйте позже.',retryAfter:Math.ceil((current.blockedUntil-now)/1000)});
+ }
  const supplied=Buffer.from(String(req.body?.password||'')),expected=Buffer.from(password);
- if(submittedPhone!==configuredPhone||supplied.length!==expected.length||!crypto.timingSafeEqual(supplied,expected))return res.status(401).json({error:'Неверный телефон или пароль'});
+ const validPhone=submittedPhone===configuredPhone;
+ const validPassword=supplied.length===expected.length && crypto.timingSafeEqual(supplied,expected);
+ if(!validPhone||!validPassword){
+  const next={count:current.count+1,blockedUntil:0};
+  if(next.count>=5){next.blockedUntil=now+600000;}
+  loginAttempts.set(key,next);
+  if(next.blockedUntil){
+   return res.status(429).json({error:'Слишком много попыток входа. Попробуйте позже.',retryAfter:600});
+  }
+  return res.status(401).json({error:'Неверный телефон или пароль'});
+ }
+ loginAttempts.delete(key);
  for(const [token,expires] of sessions)if(expires<=Date.now())sessions.delete(token);
  const token=crypto.randomBytes(32).toString('hex');sessions.set(token,Date.now()+30*86400000);
  res.setHeader('Set-Cookie',cookieHeader(req,token,2592000));res.json({ok:true});
@@ -120,9 +140,25 @@ async function createReward(x,ownerCreated=false){
 app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const x=req.body||{}; try{ switch(x.action){
  case 'blockDates': {if(!validRange(x.arrival,x.departure)||!['blocked','booked'].includes(x.kind||'blocked'))return res.status(400).json({error:'Проверьте период блокировки'});await transaction(async client=>{await lockBookingDates(client);const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE status IN ('request','waitlist','confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[x.arrival,x.departure]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});await client.query('INSERT INTO calendar_blocks(id,arrival,departure,kind,note) VALUES($1,$2,$3,$4,$5)',[id(),x.arrival,x.departure,x.kind||'blocked',String(x.note||'').slice(0,500)]);});break;}
  case 'removeBlock': await pool.query('DELETE FROM calendar_blocks WHERE id=$1',[x.id]);break;
- case 'setPrices': {const p=await pricing();p.weekday=Number(x.weekday);p.friday=Number(x.friday);p.saturday=Number(x.saturday);await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;}
- case 'setDatePrice': {const p=await pricing();p.dates={...(p.dates||{}),[x.date]:Number(x.price)};await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;}
- case 'removeDatePrice': {const p=await pricing();delete p.dates?.[x.date];await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;}
+ case 'setPrices': {
+  const p=await pricing();
+  const weekday=Number(x.weekday),friday=Number(x.friday),saturday=Number(x.saturday);
+  if(!isValidPrice(weekday,1000000)||!isValidPrice(friday,1000000)||!isValidPrice(saturday,1000000))throw Object.assign(new Error('Некорректные цены'),{status:400});
+  p.weekday=weekday;p.friday=friday;p.saturday=saturday;
+  await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;
+ }
+ case 'setDatePrice': {
+  const p=await pricing();
+  if(!isDate(x.date)||!isValidPrice(x.price,1000000))throw Object.assign(new Error('Некорректная цена или дата'),{status:400});
+  p.dates={...(p.dates||{}),[x.date]:Number(x.price)};
+  await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;
+ }
+ case 'removeDatePrice': {
+  if(!isDate(x.date))throw Object.assign(new Error('Некорректная дата'),{status:400});
+  const p=await pricing();
+  delete p.dates?.[x.date];
+  await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;
+ }
  case 'memberNote': await pool.query('UPDATE members SET note=$1 WHERE id=$2',[x.note||'',x.memberId]);break;
  case 'deductPoints': {const points=Number(x.points),requestId=String(x.requestId||'');if(!x.memberId||!Number.isInteger(points)||points<1||points>100000||!requestId||requestId.length>128)return res.status(400).json({error:'Проверьте сумму списания'});await transaction(async client=>{const old=await client.query('SELECT 1 FROM point_ledger WHERE request_id=$1',[requestId]);if(old.rowCount)return;const member=await client.query('SELECT id FROM members WHERE id=$1 FOR UPDATE',[x.memberId]);if(!member.rowCount)throw Object.assign(new Error('Участник не найден'),{status:400});const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN kind IN ('earned','release') THEN points ELSE -points END),0)::int AS points FROM point_ledger WHERE member_id=$1",[x.memberId]);if(balance.rows[0].points<points)throw Object.assign(new Error('Недостаточно баллов'),{status:400});await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id) VALUES($1,$2,'deducted',$3,$4) ON CONFLICT(request_id) DO NOTHING",[x.memberId,points,String(x.reason||'').slice(0,500),requestId]);});break;}
  case 'bookingStatus': {if(!['waitlist','request','confirmed','completed','cancelled'].includes(x.status))return res.status(400).json({error:'Некорректный статус'});await transaction(async client=>{const q=await client.query('UPDATE bookings SET status=$1,early_credited=CASE WHEN $1=\'completed\' AND $3 THEN true ELSE early_credited END WHERE id=$2 RETURNING *',[x.status,x.id,!!x.acceptEarlyRisk]);const bk=q.rows[0];if(bk&&x.status==='completed'&&bk.referrer)await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,booking_id) VALUES($1,$2,'earned','Завершённое проживание',$3,$4) ON CONFLICT(request_id) DO NOTHING",[bk.referrer,bk.nights,'booking:'+bk.id,bk.id]);});break;}

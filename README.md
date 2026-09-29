@@ -1,23 +1,38 @@
-# Дом на Хвойной — Amvera
+# Дом на Хвойной
 
-Восстановленный проект сайта для переноса на Amvera.
+## Requirements
+- Node.js 20+
+- PostgreSQL
 
-- `public/` — сохранённый frontend и оригинальные статические ресурсы.
-- `server.js` — Node.js API, совместимый с сохранённым frontend.
-- `schema.sql` — PostgreSQL схема.
-- `seed.sql` — восстановленные данные на 29.09.2026.
-- `.env.example` — список переменных окружения. Настоящие секреты в GitHub не загружать.
+## Local
+1. `npm ci`
+2. `npm start`
 
-## Запуск
+## Environment variables
+Create a local `.env` file from `.env.example` and set:
+- `DATABASE_URL`
+- `OWNER_PHONE`
+- `OWNER_PASSWORD`
+- `PORT`
+- `NODE_ENV`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_OWNER_CHAT_ID`
+- `TELEGRAM_WEBHOOK_SECRET`
 
-1. Создать PostgreSQL.
-2. Выполнить `schema.sql`, затем `seed.sql`.
-3. Задать переменные окружения по `.env.example`.
-4. `npm install`
-5. `npm start`
+No real secrets should be committed to the repository.
 
-Amvera должна передать `PORT`; приложение слушает `0.0.0.0`.
+## Database
+- `schema.sql` creates the database structure.
+- `seed.sql` contains only demo data for local/demo development.
+- `seed.sql` must not be run against production.
 
-## Важно
+## Amvera
+For deployment, set the required environment variables, then run:
+- `npm ci`
+- `npm start`
+- `PORT` as the exposed port value
 
-Frontend — сохранённая с работающего сайта compiled-версия. Backend восстановлен по наблюдаемому API-контракту и данным старого сайта; это не исходный серверный код прежнего хостинга.
+## Notes
+- `schema.sql` applies the database structure.
+- `seed.sql` is only for local/demo use and must not be used in production.
+- The frontend is preserved as a static build and should not be redesigned in this pass.
