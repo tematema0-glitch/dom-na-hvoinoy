@@ -6,12 +6,14 @@ import { fileURLToPath } from 'url';
 
 const { Pool } = pg;
 const app = express();
-const pool = process.env.DATABASE_URL ? new Pool({
- connectionString: process.env.DATABASE_URL,
+const databaseUrl = process.env.DATABASE_URL;
+const databaseHostname = databaseUrl ? new URL(databaseUrl).hostname : '';
+const pool = databaseUrl ? new Pool({
+ connectionString: databaseUrl,
  connectionTimeoutMillis: 5000,
  idleTimeoutMillis: 30000,
  max: 10,
- ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+ ssl: databaseHostname === 'localhost' || databaseHostname.includes('-cnpg-') ? false : { rejectUnauthorized: false }
 }) : null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
