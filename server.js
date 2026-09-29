@@ -199,7 +199,7 @@ async function startServer(){
  }
  app.listen(PORT,'0.0.0.0',()=>console.log(`dom-na-hvoinoy listening on ${PORT}`));
 }
-startServer().catch(()=>{
- console.error('Database schema initialization failed.');
+startServer().catch(error=>{
+ console.error('Database schema initialization failed:', error.code || error.name, error.message);
  process.exit(1);
 });
