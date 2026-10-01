@@ -35,6 +35,36 @@ function validRange(a,b){return nights(a,b)>0;}
 function isValidPrice(value,max=1000000){const n=Number(value); return Number.isFinite(n) && n >= 0 && n <= max; }
 async function transaction(work){const client=await pool.connect();try{await client.query('BEGIN');const result=await work(client);await client.query('COMMIT');return result;}catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}}
 async function lockBookingDates(client){await client.query("SELECT pg_advisory_xact_lock(hashtext('dom-na-hvoinoy-booking-dates'))");}
+async function ensureMemberReferralCode(member){
+ const validCode=code=>typeof code==='string'&&code.trim()?code:null;
+ const existing=validCode(member.code);
+ if(existing)return existing;
+ for(let attempt=0;attempt<5;attempt++){
+  try{
+   return await transaction(async client=>{
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('dom-na-hvoinoy-member-referral-code'))");
+    const current=await client.query('SELECT code FROM members WHERE id=$1 FOR UPDATE',[member.id]);
+    if(!current.rowCount)throw new Error('Member no longer exists');
+    const currentCode=validCode(current.rows[0].code);
+    if(currentCode)return currentCode;
+    for(let candidateAttempt=0;candidateAttempt<10;candidateAttempt++){
+     const code='DOM'+crypto.randomBytes(4).toString('hex').toUpperCase();
+     const used=await client.query('SELECT 1 FROM members WHERE code=$1 LIMIT 1',[code]);
+     if(used.rowCount)continue;
+     const updated=await client.query("UPDATE members SET code=$2 WHERE id=$1 AND (code IS NULL OR code ~ '^[[:space:]]*$') RETURNING code",[member.id,code]);
+     if(updated.rowCount)return updated.rows[0].code;
+     const latest=await client.query('SELECT code FROM members WHERE id=$1',[member.id]);
+     const latestCode=validCode(latest.rows[0]?.code);
+     if(latestCode)return latestCode;
+     throw new Error('Unable to assign a referral code to member');
+    }
+    throw new Error('Unable to generate a unique member referral code');
+   });
+  }catch(error){
+   if(error.code!=='23505'||attempt===4)throw error;
+  }
+ }
+}
 function cookieHeader(req,token,maxAge){const secure=process.env.NODE_ENV==='production'||req.secure||req.headers['x-forwarded-proto']==='https';return `hvoinaya_admin=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure?'; Secure':''}`;}
 function deviceCookieHeader(req,token,maxAge){const secure=process.env.NODE_ENV==='production'||req.secure||req.headers['x-forwarded-proto']==='https';return `hvoinaya_device=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure?'; Secure':''}`;}
 async function issueDeviceToken(req,res,memberId){const token=crypto.randomBytes(32).toString('base64url'),tokenHash=crypto.createHash('sha256').update(token).digest('hex');await pool.query("INSERT INTO member_devices(token_hash,member_id,expires_at) VALUES($1,$2,now()+interval '365 days')",[tokenHash,memberId]);res.setHeader('Set-Cookie',deviceCookieHeader(req,token,31536000));}
@@ -64,6 +94,7 @@ app.get('/api/me',async(req,res)=>{
  if(!device.rowCount){res.setHeader('Set-Cookie',deviceCookieHeader(req,'',0));return res.json({loggedIn:false});}
  const member=await pool.query('SELECT id,name,phone,code FROM members WHERE id=$1',[device.rows[0].member_id]);
  if(!member.rowCount){res.setHeader('Set-Cookie',deviceCookieHeader(req,'',0));return res.json({loggedIn:false});}
+ member.rows[0].code=await ensureMemberReferralCode(member.rows[0]);
  res.json(await memberAccount(member.rows[0]));
 });
 
@@ -77,6 +108,7 @@ app.post('/api/members',async(req,res)=>{
   const q=await pool.query('SELECT id,name,phone,code FROM members WHERE phone=$1',[ph]);
   if(!q.rowCount)return res.status(404).json({error:'Участник не найден'});
   const member=q.rows[0];
+  member.code=await ensureMemberReferralCode(member);
   await issueDeviceToken(req,res,member.id);
   const [account,guests]=await Promise.all([memberAccount(member),invitedGuests(member.id)]);
   return res.json({...account.member,bookings:account.bookings,invitedGuests:guests,referralBookings:account.invitedGuests});
@@ -87,6 +119,7 @@ app.post('/api/members',async(req,res)=>{
   const mid='phone:'+id(),code='DOM'+crypto.randomBytes(4).toString('hex').toUpperCase();
   const q=await pool.query('INSERT INTO members(id,name,phone,code) VALUES($1,$2,$3,$4) ON CONFLICT(phone) DO UPDATE SET phone=EXCLUDED.phone RETURNING id,name,phone,code',[mid,name,ph,code]);
   const member=q.rows[0];
+  member.code=await ensureMemberReferralCode(member);
   await issueDeviceToken(req,res,member.id);
   const account=await memberAccount(member);
   return res.json({...account.member,bookings:account.bookings,invitedGuests:account.invitedGuests,referralBookings:account.invitedGuests});
@@ -143,7 +176,7 @@ app.post('/api/admin/login',(req,res)=>{
 });
 app.post('/api/admin/logout',(req,res)=>{const token=cookie(req).hvoinaya_admin;if(token)sessions.delete(token);res.setHeader('Set-Cookie',cookieHeader(req,'',0));res.json({ok:true});});
 
-app.get('/api/club', async(req,res)=>{ try{ const ph=req.query.phone?phone(req.query.phone):null;if(req.query.phone&&!ph)return res.status(400).json({error:'Укажите корректный телефон'}); let me=null; if(ph){const q=await pool.query('SELECT id,name,phone,code FROM members WHERE phone=$1',[ph]);me=q.rows[0]||null;} const admin=isAdmin(req); const b=await balances();const guests=me?await invitedGuests(me.id):[]; if(!admin){return res.json({me,isAdmin:false,balance:me?b[me.id]||0:0,userId:me?.id||null,invitedGuests:guests,members:[],deductions:[],blocks:[],bookings:[],rewards:[]});}
+app.get('/api/club', async(req,res)=>{ try{ const ph=req.query.phone?phone(req.query.phone):null;if(req.query.phone&&!ph)return res.status(400).json({error:'Укажите корректный телефон'}); let me=null; if(ph){const q=await pool.query('SELECT id,name,phone,code FROM members WHERE phone=$1',[ph]);me=q.rows[0]||null;if(me)me.code=await ensureMemberReferralCode(me);} const admin=isAdmin(req); const b=await balances();const guests=me?await invitedGuests(me.id):[]; if(!admin){return res.json({me,isAdmin:false,balance:me?b[me.id]||0:0,userId:me?.id||null,invitedGuests:guests,members:[],deductions:[],blocks:[],bookings:[],rewards:[]});}
  const [m,d,bl,bk,rw]=await Promise.all([pool.query('SELECT * FROM members ORDER BY created_at'),pool.query("SELECT member_id,points,reason,created_at AS created FROM point_ledger WHERE kind='deducted' ORDER BY created_at DESC"),pool.query('SELECT id,arrival::text,departure::text,note,kind,created_at AS created FROM calendar_blocks ORDER BY arrival'),pool.query('SELECT id,user_id,name,phone,arrival::text,departure::text,guests,nights,total,referrer,status,created_at AS created,request_key,early_credited,archived,dates_released,telegram_state,telegram_attempted_at FROM bookings ORDER BY created_at DESC'),pool.query('SELECT id,member_id,kind,date::text,called,points,status,created_at AS created FROM rewards ORDER BY created_at DESC')]);
  res.json({me,isAdmin:true,members:m.rows.map(x=>({...x,balance:b[x.id]||0})),deductions:d.rows,blocks:bl.rows,bookings:bk.rows,rewards:rw.rows,balance:me?b[me.id]||0:0,userId:me?.id||null,invitedGuests:guests}); }catch(e){console.error(e);res.status(500).json({error:'Не удалось загрузить кабинет'});} });
 
