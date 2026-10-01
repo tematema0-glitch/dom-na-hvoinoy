@@ -232,7 +232,7 @@ styles.textContent = `
 .guest-cabinet-summary span{font-size:14px}
 .guest-referral{display:grid;gap:10px;margin:20px 0 22px;padding:18px 0;border-top:1px solid #ffffff24;border-bottom:1px solid #ffffff24}
 .guest-referral h3{margin:0;font-size:18px;line-height:1.35}
-.guest-referral-code{margin:0;color:#f1f1f1;font-size:15px;line-height:1.5}
+.guest-referral-code{margin:0;color:#101110;font-size:15px;line-height:1.5}
 .guest-referral-url{width:fit-content;max-width:100%;color:#dbff00;overflow-wrap:anywhere;font-size:14px}
 .guest-referral .small{margin:0}
 .guest-referral-copy{width:fit-content;max-width:100%;white-space:normal}
