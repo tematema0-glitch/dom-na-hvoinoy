@@ -250,7 +250,7 @@ app.use((error,req,res,next)=>{
  const message=status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
  res.status(status).json({error:message});
 });
-app.get('/',async(req,res,next)=>{try{const html=await readFile(path.join(__dirname,'public','index.html'),'utf8');res.type('html').send(html.replace('</body>','<script type="module" src="/house-gallery.js"></script><script type="module" src="/guest-cabinet.js"></script></body>'));}catch(error){next(error);}});
+app.get('/',async(req,res,next)=>{try{let html=await readFile(path.join(__dirname,'public','index.html'),'utf8');const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>'].filter(script=>!html.includes(script)).join('');if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);res.type('html').send(html);}catch(error){next(error);}});
 app.use(express.static(path.join(__dirname,'public'),{extensions:['html']}));
 app.use((req,res)=>{if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});res.sendFile(path.join(__dirname,'public','index.html'));});
 async function startServer(){
