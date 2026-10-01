@@ -54,16 +54,60 @@ function appendAccountSection(container, title, entries, renderEntry, emptyText)
   container.append(section);
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const input = element('textarea');
+    input.value = text;
+    input.setAttribute('readonly', '');
+    input.style.position = 'fixed';
+    input.style.opacity = '0';
+    document.body.append(input);
+    input.select();
+    const copied = document.execCommand('copy');
+    input.remove();
+    return copied;
+  }
+}
+
+function renderReferralLink(container, code) {
+  const section = element('section', 'guest-referral');
+  section.append(element('h3', '', 'Ваша ссылка — их следующий отдых'));
+  const url = `${location.origin}/?ref=${code}`;
+  const link = element('a', 'guest-referral-url', url);
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  section.append(link);
+  section.append(element('p', 'small', 'Отправьте её друзьям — их бронирования будут учитываться в вашей программе.'));
+
+  const button = element('button', 'primary guest-referral-copy', 'Скопировать ссылку');
+  button.type = 'button';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    const copied = await copyText(url);
+    button.textContent = copied ? 'Скопировано' : 'Не удалось скопировать';
+    setTimeout(() => {
+      button.textContent = 'Скопировать ссылку';
+      button.disabled = false;
+    }, 1800);
+  });
+  section.append(button);
+  container.append(section);
+}
+
 function renderAccount(card) {
   const member = state.account.member;
   card.append(element('h2', '', 'Мой кабинет'));
   const summary = element('div', 'guest-cabinet-summary');
   summary.append(element('strong', '', member.name));
-  summary.append(element('span', '', `Реферальный код: ${member.code}`));
   summary.append(element('span', '', `Баланс: ${member.balance} баллов`));
   card.append(summary);
+  renderReferralLink(card, member.code);
 
-  appendAccountSection(card, 'Мои заявки', state.account.bookings, booking => {
+  appendAccountSection(card, 'Ваши заявки', state.account.bookings, booking => {
     const row = element('article', 'guest-cabinet-row');
     row.append(element('strong', '', dateRange(booking.arrival, booking.departure)));
     row.append(element('span', '', `${booking.guests} гостей · ${new Intl.NumberFormat('ru-RU').format(booking.total)} ₽`));
@@ -72,7 +116,7 @@ function renderAccount(card) {
     return row;
   }, 'Заявок пока нет.');
 
-  appendAccountSection(card, 'Приглашённые', state.account.invitedGuests, guest => {
+  appendAccountSection(card, 'Кого вы пригласили', state.account.invitedGuests, guest => {
     const row = element('article', 'guest-cabinet-row');
     row.append(element('strong', '', guest.name));
     row.append(element('span', '', `${dateRange(guest.arrival, guest.departure)} · ${guest.nights} ночей`));
@@ -104,7 +148,7 @@ async function submitPhone(event) {
     const result = await response.json();
     if (response.status === 404 && !state.needsName) {
       state.needsName = true;
-      state.error = 'Участник не найден. Укажите имя, чтобы создать кабинет.';
+      state.error = 'Не нашли ваш номер. Укажите имя для кабинета.';
       return;
     }
     if (!response.ok) throw new Error(result.error || 'Не удалось открыть кабинет');
@@ -140,7 +184,7 @@ function renderAnonymous(card) {
   phoneLabel.append(phoneInput);
   fields.append(phoneLabel);
   if (state.needsName) {
-    const nameLabel = element('label', '', 'Имя');
+    const nameLabel = element('label', '', 'Как вас зовут?');
     const nameInput = element('input');
     nameInput.name = 'name';
     nameInput.autocomplete = 'given-name';
@@ -165,6 +209,7 @@ function render() {
   const tab = [...document.querySelectorAll('[role="tab"]')].find(item => item.textContent.trim() === 'Пригласить друзей');
   const panel = tab && document.getElementById(tab.getAttribute('aria-controls'));
   if (!panel) return;
+  panel.querySelectorAll('.invite-card').forEach(block => block.remove());
   let card = panel.querySelector('.guest-cabinet');
   if (!card) {
     const intro = panel.querySelector('.club-intro');
@@ -184,6 +229,11 @@ styles.textContent = `
 .guest-cabinet{max-width:900px;margin:24px auto;scroll-margin-top:24px}
 .guest-cabinet-summary,.guest-cabinet-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px 20px;margin:16px 0}
 .guest-cabinet-summary span{font-size:14px}
+.guest-referral{display:grid;gap:10px;margin:20px 0 22px;padding:18px 0;border-top:1px solid #ffffff24;border-bottom:1px solid #ffffff24}
+.guest-referral h3{margin:0;font-size:18px;line-height:1.35}
+.guest-referral-url{width:fit-content;max-width:100%;color:#dbff00;overflow-wrap:anywhere;font-size:14px}
+.guest-referral .small{margin:0}
+.guest-referral-copy{width:fit-content;max-width:100%;white-space:normal}
 .guest-cabinet-form{max-width:620px}
 .guest-cabinet-form input{width:100%;margin-top:6px;padding:11px 12px;border:1px solid #b3ca43;border-radius:8px;background:#ffffffb8;color:#111}
 .guest-cabinet-form .primary{margin-top:8px}
@@ -199,6 +249,7 @@ document.head.append(styles);
 const observer = new MutationObserver(() => {
   const tab = [...document.querySelectorAll('[role="tab"]')].find(item => item.textContent.trim() === 'Пригласить друзей');
   const panel = tab && document.getElementById(tab.getAttribute('aria-controls'));
+  panel?.querySelectorAll('.invite-card').forEach(block => block.remove());
   if (panel && !panel.querySelector('.guest-cabinet')) render();
   else fillBookingForm();
 });
