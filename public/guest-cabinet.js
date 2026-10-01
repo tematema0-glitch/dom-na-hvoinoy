@@ -75,9 +75,7 @@ async function copyText(text) {
 function renderReferralLink(container, code) {
   const section = element('section', 'guest-referral');
   section.append(element('h3', '', 'Ваша ссылка — их следующий отдых'));
-  const codeLine = element('p', 'guest-referral-code');
-  codeLine.append(document.createTextNode('Реферальный код: '), element('strong', '', code));
-  section.append(codeLine);
+  section.append(element('p', 'guest-referral-code', `Реферальный код: ${code}`));
   const url = `${location.origin}/?ref=${code}`;
   const link = element('a', 'guest-referral-url', url);
   link.href = url;
@@ -235,7 +233,6 @@ styles.textContent = `
 .guest-referral{display:grid;gap:10px;margin:20px 0 22px;padding:18px 0;border-top:1px solid #ffffff24;border-bottom:1px solid #ffffff24}
 .guest-referral h3{margin:0;font-size:18px;line-height:1.35}
 .guest-referral-code{margin:0;color:#f1f1f1;font-size:15px;line-height:1.5}
-.guest-referral-code strong{color:#dbff00;font-weight:700}
 .guest-referral-url{width:fit-content;max-width:100%;color:#dbff00;overflow-wrap:anywhere;font-size:14px}
 .guest-referral .small{margin:0}
 .guest-referral-copy{width:fit-content;max-width:100%;white-space:normal}
