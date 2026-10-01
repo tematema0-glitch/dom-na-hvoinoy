@@ -13,6 +13,16 @@ CREATE TABLE IF NOT EXISTS members (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS member_devices (
+  token_hash text PRIMARY KEY,
+  member_id text NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS member_devices_member_idx ON member_devices(member_id);
+CREATE INDEX IF NOT EXISTS member_devices_expires_idx ON member_devices(expires_at);
+
 CREATE TABLE IF NOT EXISTS point_ledger (
   id bigserial PRIMARY KEY,
   member_id text NOT NULL REFERENCES members(id) ON DELETE CASCADE,

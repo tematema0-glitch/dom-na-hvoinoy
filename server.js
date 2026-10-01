@@ -36,13 +36,36 @@ function isValidPrice(value,max=1000000){const n=Number(value); return Number.is
 async function transaction(work){const client=await pool.connect();try{await client.query('BEGIN');const result=await work(client);await client.query('COMMIT');return result;}catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}}
 async function lockBookingDates(client){await client.query("SELECT pg_advisory_xact_lock(hashtext('dom-na-hvoinoy-booking-dates'))");}
 function cookieHeader(req,token,maxAge){const secure=process.env.NODE_ENV==='production'||req.secure||req.headers['x-forwarded-proto']==='https';return `hvoinaya_admin=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure?'; Secure':''}`;}
+function deviceCookieHeader(req,token,maxAge){const secure=process.env.NODE_ENV==='production'||req.secure||req.headers['x-forwarded-proto']==='https';return `hvoinaya_device=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure?'; Secure':''}`;}
+async function issueDeviceToken(req,res,memberId){const token=crypto.randomBytes(32).toString('base64url'),tokenHash=crypto.createHash('sha256').update(token).digest('hex');await pool.query("INSERT INTO member_devices(token_hash,member_id,expires_at) VALUES($1,$2,now()+interval '365 days')",[tokenHash,memberId]);res.setHeader('Set-Cookie',deviceCookieHeader(req,token,31536000));}
+async function memberAccount(member){
+ const [balance,bookings,invited]=await Promise.all([
+  pool.query("SELECT COALESCE(SUM(CASE WHEN kind='earned' THEN points WHEN kind IN ('deducted','reserved','spent') THEN -points WHEN kind='release' THEN points ELSE 0 END),0)::int AS balance FROM point_ledger WHERE member_id=$1",[member.id]),
+  pool.query("SELECT arrival::text,departure::text,guests,total,status,dates_released FROM bookings WHERE (phone=$1 OR user_id=$2) AND archived=false ORDER BY created_at DESC",[member.phone,member.id]),
+  pool.query("SELECT b.name,b.arrival::text,b.departure::text,b.nights,b.status,b.dates_released,COALESCE(points.earned,0)::int AS earned_points FROM bookings b LEFT JOIN LATERAL (SELECT SUM(points)::int AS earned FROM point_ledger WHERE member_id=$1 AND kind='earned' AND (booking_id=b.id OR request_id='booking:'||b.id)) points ON true WHERE b.referrer=$1 AND b.archived=false ORDER BY b.created_at DESC",[member.id])
+ ]);
+ const today=new Date().toISOString().slice(0,10);
+ return {loggedIn:true,member:{id:member.id,name:member.name,phone:member.phone,code:member.code,balance:balance.rows[0].balance},bookings:bookings.rows,invitedGuests:invited.rows.map(guest=>({...guest,statusLabel:guest.status==='request'?'Бронь создана':guest.status==='waitlist'?'Лист ожидания':guest.status==='confirmed'?(guest.arrival>today?'Ожидание заезда':'Бронирование подтверждено'):guest.status==='completed'?(guest.earned_points>0?'Баллы начислены':'Заезд состоялся'):'Бронь отменена'}))};
+}
 async function pricing(queryable=pool){ const r=await queryable.query("SELECT value FROM settings WHERE key='pricing'"); return r.rows[0]?.value || {weekday:23000,friday:30000,saturday:34000,dates:{}}; }
 function stayPrice(a,b,g,p,firstReferral=false){ let total=0; for(let d=new Date(a+'T00:00:00Z'),end=new Date(b+'T00:00:00Z');d<end;d.setUTCDate(d.getUTCDate()+1)){ const ds=d.toISOString().slice(0,10); const dow=d.getUTCDay(); let base=Number(p.dates?.[ds] ?? (dow===5?p.friday:dow===6?p.saturday:p.weekday)); total += base + Math.max(0,Number(g)-12)*1000 - (firstReferral?2000:0); } return Math.max(0,total); }
 async function balances(){ const q=await pool.query(`SELECT m.id, COALESCE(SUM(CASE WHEN l.kind='earned' THEN l.points WHEN l.kind IN ('deducted','reserved','spent') THEN -l.points WHEN l.kind='release' THEN l.points ELSE 0 END),0)::int balance FROM members m LEFT JOIN point_ledger l ON l.member_id=m.id GROUP BY m.id`); return Object.fromEntries(q.rows.map(x=>[x.id,x.balance])); }
 async function invitedGuests(memberId){const q=await pool.query(`SELECT name,COUNT(*) FILTER(WHERE status<>'cancelled' AND archived=false)::int stays,COUNT(*) FILTER(WHERE status='completed' AND archived=false)::int completed_stays,COALESCE(SUM(nights) FILTER(WHERE status='completed' AND archived=false),0)::int completed_nights FROM bookings WHERE referrer=$1 GROUP BY name ORDER BY name`,[memberId]);return q.rows;}
 
 app.get('/healthz',async(req,res)=>{if(!pool)return res.json({ok:true,database:'not_configured'});try{await pool.query('SELECT 1');res.json({ok:true,database:'available'});}catch{res.status(503).json({ok:false,database:'unavailable'});}});
-app.use('/api',(req,res,next)=>{if(['/admin/login','/admin/logout','/telegram/webhook'].includes(req.path))return next();if(!pool)return res.status(503).json({error:'Database is not configured'});next();});
+app.use('/api',(req,res,next)=>{if(['/admin/login','/admin/logout','/telegram/webhook','/me'].includes(req.path))return next();if(!pool)return res.status(503).json({error:'Database is not configured'});next();});
+
+app.get('/api/me',async(req,res)=>{
+ const token=cookie(req).hvoinaya_device;
+ if(!pool)return token?res.status(503).json({error:'Database is not configured'}):res.json({loggedIn:false});
+ if(!token)return res.json({loggedIn:false});
+ const tokenHash=crypto.createHash('sha256').update(token).digest('hex');
+ const device=await pool.query('UPDATE member_devices SET last_seen_at=now() WHERE token_hash=$1 AND expires_at>now() RETURNING member_id',[tokenHash]);
+ if(!device.rowCount){res.setHeader('Set-Cookie',deviceCookieHeader(req,'',0));return res.json({loggedIn:false});}
+ const member=await pool.query('SELECT id,name,phone,code FROM members WHERE id=$1',[device.rows[0].member_id]);
+ if(!member.rowCount){res.setHeader('Set-Cookie',deviceCookieHeader(req,'',0));return res.json({loggedIn:false});}
+ res.json(await memberAccount(member.rows[0]));
+});
 
 app.get('/api/pricing', async(req,res)=>res.json(await pricing()));
 app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE status IN ('request','waitlist','confirmed','completed') AND dates_released=false ORDER BY arrival`); res.json({ranges:q.rows}); });
@@ -54,15 +77,19 @@ app.post('/api/members',async(req,res)=>{
   const q=await pool.query('SELECT id,name,phone,code FROM members WHERE phone=$1',[ph]);
   if(!q.rowCount)return res.status(404).json({error:'Участник не найден'});
   const member=q.rows[0];
-  const b=await balances(),guests=await invitedGuests(member.id);
-  return res.json({id:member.id,name:member.name,phone:member.phone,code:member.code,balance:b[member.id]||0,invitedGuests:guests});
+  await issueDeviceToken(req,res,member.id);
+  const [account,guests]=await Promise.all([memberAccount(member),invitedGuests(member.id)]);
+  return res.json({...account.member,bookings:account.bookings,invitedGuests:guests,referralBookings:account.invitedGuests});
  }
  if(action==='join'){
   const name=String(req.body?.name||'').trim();
   if(!name||name.length>80)return res.status(400).json({error:'Укажите имя (не более 80 символов)'});
   const mid='phone:'+id(),code='DOM'+crypto.randomBytes(4).toString('hex').toUpperCase();
-  const q=await pool.query('INSERT INTO members(id,name,phone,code) VALUES($1,$2,$3,$4) ON CONFLICT(phone) DO UPDATE SET phone=EXCLUDED.phone RETURNING *',[mid,name,ph,code]);
-  return res.json(q.rows[0]);
+  const q=await pool.query('INSERT INTO members(id,name,phone,code) VALUES($1,$2,$3,$4) ON CONFLICT(phone) DO UPDATE SET phone=EXCLUDED.phone RETURNING id,name,phone,code',[mid,name,ph,code]);
+  const member=q.rows[0];
+  await issueDeviceToken(req,res,member.id);
+  const account=await memberAccount(member);
+  return res.json({...account.member,bookings:account.bookings,invitedGuests:account.invitedGuests,referralBookings:account.invitedGuests});
  }
  res.status(400).json({error:'Неизвестное действие'});
 });
@@ -190,6 +217,7 @@ app.use((error,req,res,next)=>{
  const message=status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
  res.status(status).json({error:message});
 });
+app.get('/',async(req,res,next)=>{try{const html=await readFile(path.join(__dirname,'public','index.html'),'utf8');res.type('html').send(html.replace('</body>','<script type="module" src="/guest-cabinet.js"></script></body>'));}catch(error){next(error);}});
 app.use(express.static(path.join(__dirname,'public'),{extensions:['html']}));
 app.use((req,res)=>{if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});res.sendFile(path.join(__dirname,'public','index.html'));});
 async function startServer(){
