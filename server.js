@@ -242,14 +242,17 @@ app.post('/api/telegram/webhook',(req,res)=>{const secret=process.env.TELEGRAM_W
 // Protected API prepared for a future ChatGPT/MCP connector.
 app.get('/admin-api/health',(req,res)=>{if(!requireAdmin(req,res))return;res.json({ok:true,service:'dom-na-hvoinoy'});});
 
+app.use((error,req,res,next)=>{
+ if(res.headersSent)return next(error);
+ const connectionError=error.code?.startsWith('08')||['ECONNREFUSED','ECONNRESET','ETIMEDOUT','57P01'].includes(error.code);
+ const status=error.status||(error.code==='23505'?409:connectionError?503:500);
+ console.error('Request failed',req.method,req.path,error.code||error.name);
+ const message=status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
+ res.status(status).json({error:message});
+});
+app.get('/',async(req,res,next)=>{try{const html=await readFile(path.join(__dirname,'public','index.html'),'utf8');res.type('html').send(html.replace('</body>','<script type="module" src="/house-gallery.js"></script><script type="module" src="/guest-cabinet.js"></script></body>'));}catch(error){next(error);}});
 app.use(express.static(path.join(__dirname,'public'),{extensions:['html']}));
 app.use((req,res)=>{if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});res.sendFile(path.join(__dirname,'public','index.html'));});
-app.use((error,req,res,next)=>{
- if(req.path!=='/')return next(error);
- if(res.headersSent)return next(error);
- console.error('Root page request failed',error.code||error.name);
- res.status(500).type('text').send('Unable to load the homepage');
-});
 async function startServer(){
  if(pool){
   const schema=await readFile(path.join(__dirname,'schema.sql'),'utf8');
