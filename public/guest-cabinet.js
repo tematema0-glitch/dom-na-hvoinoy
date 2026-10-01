@@ -101,10 +101,6 @@ function renderReferralLink(container, code) {
   container.append(section);
 }
 
-function accountReferralCode(account) {
-  return account.member?.code || account.code || account.me?.code || '';
-}
-
 function renderAccount(card) {
   const member = state.account.member;
   card.append(element('h2', '', 'Мой кабинет'));
@@ -112,7 +108,7 @@ function renderAccount(card) {
   summary.append(element('strong', '', member.name));
   summary.append(element('span', '', `Баланс: ${member.balance} баллов`));
   card.append(summary);
-  renderReferralLink(card, accountReferralCode(state.account));
+  renderReferralLink(card, member.code);
 
   appendAccountSection(card, 'Ваши заявки', state.account.bookings, booking => {
     const row = element('article', 'guest-cabinet-row');
