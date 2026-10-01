@@ -217,10 +217,13 @@ function openLightbox(index, trigger) {
 }
 
 function mountGallery() {
-  if (!stylesheetReady || document.getElementById('house-photo-gallery')) return;
+  if (!stylesheetReady) return;
   const layout = document.querySelector('.house-layout');
   if (!layout) return;
-  layout.after(buildGallery());
+
+  let gallery = document.getElementById('house-photo-gallery');
+  if (!gallery) gallery = buildGallery();
+  if (layout.nextElementSibling !== gallery) layout.after(gallery);
 }
 
 document.addEventListener('click', event => {
