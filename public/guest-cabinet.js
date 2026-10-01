@@ -13,14 +13,26 @@ function dateRange(arrival, departure) {
   return `${format(arrival)} — ${format(departure)}`;
 }
 
-function bookingStatus(status) {
+function calendarDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function bookingStatus(booking, today = new Date()) {
+  if (booking.status === 'confirmed') {
+    const todayDate = calendarDate(today);
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const tomorrowDate = calendarDate(tomorrow);
+    if (booking.arrival === todayDate) return 'Заселение сегодня';
+    if (booking.arrival === tomorrowDate) return 'Заселение завтра';
+    if (booking.arrival < todayDate && todayDate < booking.departure) return 'Отдых продолжается';
+    return 'Бронирование подтверждено';
+  }
   return ({
-    request: 'Заявка отправлена — ожидает подтверждения владельца',
+    request: 'Заявка отправлена — ожидает подтверждения',
     waitlist: 'Лист ожидания',
-    confirmed: 'Бронирование подтверждено',
     completed: 'Проживание завершено',
     cancelled: 'Заявка отменена'
-  })[status] || 'Статус уточняется';
+  })[booking.status] || 'Статус уточняется';
 }
 
 function setBookingInput(input, value) {
@@ -112,7 +124,7 @@ function renderAccount(card) {
     const row = element('article', 'guest-cabinet-row');
     row.append(element('strong', '', dateRange(booking.arrival, booking.departure)));
     row.append(element('span', '', `${booking.guests} гостей · ${new Intl.NumberFormat('ru-RU').format(booking.total)} ₽`));
-    row.append(element('span', 'guest-cabinet-status', bookingStatus(booking.status)));
+    row.append(element('span', 'guest-cabinet-status', bookingStatus(booking)));
     if (booking.dates_released) row.append(element('small', '', 'Даты освобождены'));
     return row;
   }, 'Заявок пока нет.');
@@ -248,12 +260,18 @@ styles.textContent = `
 `;
 document.head.append(styles);
 
+let observedBookingResult = null;
 const observer = new MutationObserver(() => {
   const tab = [...document.querySelectorAll('[role="tab"]')].find(item => item.textContent.trim() === 'Пригласить друзей');
   const panel = tab && document.getElementById(tab.getAttribute('aria-controls'));
   panel?.querySelectorAll('.invite-card').forEach(block => block.remove());
   if (panel && !panel.querySelector('.guest-cabinet')) render();
   else fillBookingForm();
+  const bookingResult = document.querySelector('.booking-result');
+  if (bookingResult !== observedBookingResult) {
+    observedBookingResult = bookingResult;
+    if (bookingResult) restoreMember();
+  }
 });
 observer.observe(document.documentElement, { childList: true, subtree: true });
 render();
