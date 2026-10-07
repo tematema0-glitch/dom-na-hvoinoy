@@ -5,6 +5,56 @@
   color: #f1f1f1;
 }
 
+.house-location-map {
+  width: calc(100% - 56px);
+  max-width: 1244px;
+  margin: 0 auto 88px;
+  color: #f1f1f1;
+}
+
+.house-location-map-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.house-location-map h2 {
+  margin: 0;
+  font-family: Unbounded, sans-serif;
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.house-location-route {
+  flex: 0 0 auto;
+  padding: 12px 18px;
+  border-radius: 24px;
+  background: #dbff00;
+  color: #101110;
+  font-family: Manrope, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
+.house-location-route:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+}
+
+.house-location-map-frame {
+  display: block;
+  width: 100%;
+  height: clamp(280px, 40vw, 440px);
+  border: 1px solid #2b2e33;
+  border-radius: 20px;
+  background: #202227;
+}
+
 .house-photo-gallery-header {
   margin-bottom: 22px;
 }
@@ -250,6 +300,30 @@
     margin: 46px auto 64px;
   }
 
+  .house-location-map {
+    width: calc(100% - 32px);
+    margin-bottom: 64px;
+  }
+
+  .house-location-map-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .house-location-map h2 {
+    font-size: 19px;
+  }
+
+  .house-location-route {
+    width: 100%;
+  }
+
+  .house-location-map-frame {
+    height: 300px;
+  }
+
   .house-gallery-feature-grid,
   .house-gallery-spa-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -343,4 +417,12 @@
   .house-gallery-photo img {
     transition: none;
   }
+}
+
+.guest-calendar .rdp-weekday {
+  color: #7b7f84;
+}
+
+.calendar-footnote {
+  color: #5b5f64;
 }

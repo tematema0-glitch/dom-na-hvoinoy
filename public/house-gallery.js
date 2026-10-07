@@ -100,6 +100,35 @@ function buildGallery() {
   return gallery;
 }
 
+function buildLocationMap() {
+  const address = 'Екатеринбург, СНТ УКЗ-2';
+  const coordinates = '56.790236,60.768620';
+  const mapCoordinates = '60.768620,56.790236';
+  const section = element('section', 'house-location-map');
+  section.id = 'house-location-map';
+  section.setAttribute('aria-labelledby', 'house-location-map-title');
+
+  const header = element('header', 'house-location-map-header');
+  const title = element('h2', '', 'Как добраться');
+  title.id = 'house-location-map-title';
+  header.append(title);
+
+  const route = element('a', 'house-location-route', 'Построить маршрут');
+  route.href = `https://yandex.ru/maps/?rtext=~${coordinates}&rtt=auto`;
+  route.target = '_blank';
+  route.rel = 'noopener noreferrer';
+  header.append(route);
+
+  const map = element('iframe', 'house-location-map-frame');
+  map.src = `https://yandex.ru/map-widget/v1/?ll=${encodeURIComponent(mapCoordinates)}&z=16&pt=${encodeURIComponent(mapCoordinates)},pm2rdm`;
+  map.title = `Карта: ${address}`;
+  map.loading = 'lazy';
+  map.referrerPolicy = 'no-referrer-when-downgrade';
+  map.allowFullscreen = true;
+  section.append(header, map);
+  return section;
+}
+
 let lightbox;
 let lightboxImage;
 let lightboxTitle;
@@ -224,6 +253,10 @@ function mountGallery() {
   let gallery = document.getElementById('house-photo-gallery');
   if (!gallery) gallery = buildGallery();
   if (layout.nextElementSibling !== gallery) layout.after(gallery);
+
+  let map = document.getElementById('house-location-map');
+  if (!map) map = buildLocationMap();
+  if (gallery.nextElementSibling !== map) gallery.after(map);
 }
 
 document.addEventListener('click', event => {
