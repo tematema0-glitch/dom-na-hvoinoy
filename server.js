@@ -20,6 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const sessions = new Map();
 const loginAttempts = new Map();
+const bookingPhoneAttempts = new Map();
+const bookingPhoneAttemptWindow = 60 * 60 * 1000;
 const json = express.json({ limit: '256kb' });
 app.use(json);
 app.use((req,res,next)=>{
@@ -36,6 +38,33 @@ pool?.on('error', e => console.error('Unexpected PostgreSQL pool error', e.code 
 
 const id = () => crypto.randomUUID();
 const phone = v => { let p=String(v||'').replace(/\D/g,''); if(p.length===10)p='7'+p; if(p.length===11&&p[0]==='8')p='7'+p.slice(1); return /^7\d{10}$/.test(p)?p:null; };
+function reserveBookingPhoneAttempt(normalizedPhone,now=Date.now()){
+ const cutoff=now-bookingPhoneAttemptWindow;
+ const attempts=(bookingPhoneAttempts.get(normalizedPhone)||[]).filter(attempt=>attempt.at>cutoff);
+ if(attempts.length>=5){
+  bookingPhoneAttempts.set(normalizedPhone,attempts);
+  return{retryAfter:Math.max(1,Math.ceil((attempts[0].at+bookingPhoneAttemptWindow-now)/1000))};
+ }
+ const attempt={at:now};
+ attempts.push(attempt);
+ bookingPhoneAttempts.set(normalizedPhone,attempts);
+ return{retryAfter:0,rollback:()=>{
+  const current=bookingPhoneAttempts.get(normalizedPhone);
+  if(!current)return;
+  const index=current.indexOf(attempt);
+  if(index!==-1)current.splice(index,1);
+  if(!current.length)bookingPhoneAttempts.delete(normalizedPhone);
+ }};
+}
+const bookingAttemptCleanup=setInterval(()=>{
+ const cutoff=Date.now()-bookingPhoneAttemptWindow;
+ for(const [normalizedPhone,attempts] of bookingPhoneAttempts){
+  const recent=attempts.filter(attempt=>attempt.at>cutoff);
+  if(recent.length)bookingPhoneAttempts.set(normalizedPhone,recent);
+  else bookingPhoneAttempts.delete(normalizedPhone);
+ }
+},60*1000);
+bookingAttemptCleanup.unref();
 const cookie = req => Object.fromEntries(String(req.headers.cookie || '').split(';').flatMap(v=>{const i=v.indexOf('=');if(i<0)return[];try{return[[v.slice(0,i).trim(),decodeURIComponent(v.slice(i+1).trim())]]}catch{return[]}}));
 function isAdmin(req){ const t=cookie(req).hvoinaya_admin; const s=t&&sessions.get(t); if(!s)return false;if(s<=Date.now()){sessions.delete(t);return false;}return true; }
 function requireAdmin(req,res){ if(!isAdmin(req)){res.status(401).json({error:'Требуется вход владельца'});return false} return true; }
@@ -142,20 +171,29 @@ app.post('/api/bookings',async(req,res)=>{
  const {arrival,departure,code,requestKey}=req.body||{};
  const name=String(req.body?.name||'').trim(),ph=phone(req.body?.phone),guests=Number(req.body?.guests??12),key=String(requestKey||'').trim();
  if(!name||name.length>80||!ph||!validRange(arrival,departure)||!Number.isInteger(guests)||guests<1||guests>30||!key||key.length>128)return res.status(400).json({error:'Проверьте данные бронирования'});
- const booking=await transaction(async client=>{
-  await lockBookingDates(client);
-  const old=await client.query('SELECT id FROM bookings WHERE request_key=$1',[key]);
-  if(old.rowCount) throw Object.assign(new Error('Эта заявка уже отправлена'),{status:409});
-  const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1`,[arrival,departure]);
-  const previous=await client.query("SELECT EXISTS(SELECT 1 FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed')) AS has_previous,(SELECT referrer FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed') AND referrer IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS referrer",[ph]);
-  let ref=previous.rows[0].referrer,first=false;
-  if(!ref&&code){const result=await client.query('SELECT id,phone FROM members WHERE code=$1',[String(code).trim().toUpperCase()]);const member=result.rows[0];if(member&&member.phone!==ph)ref=member.id;}
-  first=!previous.rows[0].has_previous&&!!ref;
-  const prices=await pricing(client),nn=nights(arrival,departure),total=stayPrice(arrival,departure,guests,prices,first),bid=id(),status=occupied.rowCount?'waitlist':'request';
-  await client.query('INSERT INTO bookings(id,name,phone,arrival,departure,guests,nights,total,referrer,status,request_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[bid,name,ph,arrival,departure,guests,nn,total,ref,status,key]);
-  await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bid,{type:'booking',id:bid,name,phone:ph,arrival,departure,guests,total,status}]);
-  return{id:bid,status,total};
- });
+ let bookingAttempt;
+ let booking;
+ try{
+  booking=await transaction(async client=>{
+   await lockBookingDates(client);
+   const old=await client.query('SELECT id FROM bookings WHERE request_key=$1',[key]);
+   if(old.rowCount) throw Object.assign(new Error('Эта заявка уже отправлена'),{status:409});
+   bookingAttempt=reserveBookingPhoneAttempt(ph);
+   if(bookingAttempt.retryAfter)throw Object.assign(new Error('Слишком много заявок. Попробуйте немного позже.'),{status:429,retryAfter:bookingAttempt.retryAfter});
+   const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1`,[arrival,departure]);
+   const previous=await client.query("SELECT EXISTS(SELECT 1 FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed')) AS has_previous,(SELECT referrer FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed') AND referrer IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS referrer",[ph]);
+   let ref=previous.rows[0].referrer,first=false;
+   if(!ref&&code){const result=await client.query('SELECT id,phone FROM members WHERE code=$1',[String(code).trim().toUpperCase()]);const member=result.rows[0];if(member&&member.phone!==ph)ref=member.id;}
+   first=!previous.rows[0].has_previous&&!!ref;
+   const prices=await pricing(client),nn=nights(arrival,departure),total=stayPrice(arrival,departure,guests,prices,first),bid=id(),status=occupied.rowCount?'waitlist':'request';
+   await client.query('INSERT INTO bookings(id,name,phone,arrival,departure,guests,nights,total,referrer,status,request_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[bid,name,ph,arrival,departure,guests,nn,total,ref,status,key]);
+   await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bid,{type:'booking',id:bid,name,phone:ph,arrival,departure,guests,total,status}]);
+   return{id:bid,status,total};
+  });
+ }catch(error){
+  bookingAttempt?.rollback?.();
+  throw error;
+ }
  sendPending().catch(()=>{});
  res.status(201).json({...booking,availability:booking.status==='waitlist'?'waitlist':'request'});
 });
@@ -306,7 +344,7 @@ app.use((error,req,res,next)=>{
  const status=error.status||(error.code==='23505'?409:connectionError?503:500);
  console.error('Request failed',req.method,req.path,error.code||error.name);
  const message=status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
- res.status(status).json({error:message});
+ res.status(status).json({error:message,...(error.retryAfter?{retryAfter:error.retryAfter}:{})});
 });
 app.get('/',async(req,res,next)=>{try{
  let html=await readFile(path.join(__dirname,'public','index.html'),'utf8');
