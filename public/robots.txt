@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin-api/
+Disallow: /admin
+Disallow: /healthz
+Disallow: /health
+Disallow: /healthcheck
+
+Sitemap: https://собери-своих.рф/sitemap.xml

@@ -22,6 +22,16 @@ const sessions = new Map();
 const loginAttempts = new Map();
 const json = express.json({ limit: '256kb' });
 app.use(json);
+app.use((req,res,next)=>{
+ const hostname=req.hostname.toLowerCase().replace(/\.$/,'');
+ if(['www.собери-своих.рф','www.xn----9sbekpc0bfogg5c.xn--p1ai'].includes(hostname)&&['GET','HEAD'].includes(req.method)){
+  return res.redirect(301,`https://собери-своих.рф${req.originalUrl}`);
+ }
+ if(/^\/(?:api|admin-api)(?:\/|$)/.test(req.path)||/^\/(?:admin|healthz|health|healthcheck)(?:\/|$)/.test(req.path)){
+  res.setHeader('X-Robots-Tag','noindex, nofollow');
+ }
+ next();
+});
 pool?.on('error', e => console.error('Unexpected PostgreSQL pool error', e.code || e.name));
 
 const id = () => crypto.randomUUID();
@@ -298,7 +308,38 @@ app.use((error,req,res,next)=>{
  const message=status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
  res.status(status).json({error:message});
 });
-app.get('/',async(req,res,next)=>{try{let html=await readFile(path.join(__dirname,'public','index.html'),'utf8');const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>'].filter(script=>!html.includes(script)).join('');if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);res.type('html').send(html);}catch(error){next(error);}});
+app.get('/',async(req,res,next)=>{try{
+ let html=await readFile(path.join(__dirname,'public','index.html'),'utf8');
+ html=html
+  .replace(/<title\b[^>]*>[\s\S]*?<\/title>/gi,'')
+  .replace(/<meta\b[^>]*\bname=["'](?:description|robots)["'][^>]*>/gi,'')
+  .replace(/<link\b(?=[^>]*\brel=["']canonical["'])[^>]*>/gi,'')
+  .replace(/<meta\b(?=[^>]*\bproperty=["']og:(?:site_name|title|description|url|type)["'])[^>]*>/gi,'')
+  .replace(/<script\b(?=[^>]*\btype=["']application\/ld\+json["'])[^>]*>[\s\S]*?<\/script>/gi,'');
+ const structuredData=JSON.stringify({
+  '@context':'https://schema.org',
+  '@type':'WebSite',
+  name:'Собери своих',
+  alternateName:['Дом на Хвойной','собери-своих.рф'],
+  url:'https://собери-своих.рф/'
+ });
+ const seoTags=[
+  '<title>Собери своих — Дом на Хвойной в Екатеринбурге | аренда коттеджа</title>',
+  '<meta name="description" content="Дом на Хвойной в Екатеринбурге — дизайнерский коттедж среди сосен. До 30 гостей, 5 спален, сауна и камин. Цены, свободные даты и бронирование на сайте.">',
+  '<meta name="robots" content="index, follow">',
+  '<link rel="canonical" href="https://собери-своих.рф/">',
+  '<meta property="og:site_name" content="Собери своих">',
+  '<meta property="og:title" content="Соберите своих. На Хвойной.">',
+  '<meta property="og:description" content="Дизайнерский дом среди сосен в Екатеринбурге. До 30 гостей, 5 спален, камин и сауна без ограничений.">',
+  '<meta property="og:url" content="https://собери-своих.рф/">',
+  '<meta property="og:type" content="website">',
+  `<script type="application/ld+json">${structuredData}</script>`
+ ].join('');
+ html=html.replace(/<\/head>/i,`${seoTags}</head>`);
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>'].filter(script=>!html.includes(script)).join('');
+ if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
+ res.type('html').send(html);
+}catch(error){next(error);}});
 app.use(express.static(path.join(__dirname,'public'),{extensions:['html']}));
 app.use((req,res)=>{if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});res.sendFile(path.join(__dirname,'public','index.html'));});
 async function startServer(){
