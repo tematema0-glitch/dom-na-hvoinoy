@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendTelegramOutbox } from './telegram-outbox.js';
+import { handleTelegramStart } from './telegram-start.js';
 
 const { Pool } = pg;
 const app = express();
@@ -362,13 +363,6 @@ app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
   const expectedUrl=new URL('https://собери-своих.рф/api/telegram/webhook').href;
   return res.json({urlConfigured:info.url===expectedUrl||info.url===`https://собери-своих.рф/api/telegram/webhook`,expectedUrl,pendingUpdateCount:info.pending_update_count,lastErrorDate:info.last_error_date||null,lastErrorMessage:info.last_error_message||null,commands:commands.map((list,index)=>({scope:scopes[index]?.type||'default',items:list.map(command=>command.command)}))});
  }
- if(req.body?.action==='cleanup'){
-  if(!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
-  const scopes=[null,{type:'all_private_chats'},{type:'all_group_chats'},{type:'all_chat_administrators'},{type:'chat',chat_id:process.env.TELEGRAM_OWNER_CHAT_ID}];
-  const commands=await Promise.all(scopes.map(scope=>telegram('getMyCommands',scope?{scope}:{})));
-  await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text:'Клавиатура бота обновлена.',reply_markup:{remove_keyboard:true}});
-  return res.json({ok:true,preservedCommands:commands.flat().map(command=>command.command)});
- }
  return res.status(400).json({error:'Неизвестное действие Telegram'});
 }catch(error){console.error('Telegram admin action failed',error.code||error.name);return res.status(503).json({error:'Не удалось выполнить действие Telegram'});}});
 app.post('/api/telegram/webhook',async(req,res,next)=>{
@@ -380,6 +374,12 @@ app.post('/api/telegram/webhook',async(req,res,next)=>{
   if(req.body?.callback_query){
    console.info('Telegram callback received');
    await handleTelegramCallback(req.body.callback_query);
+  }else if(req.body?.message){
+   await handleTelegramStart(req.body.message,{
+    ownerChatId:process.env.TELEGRAM_OWNER_CHAT_ID,
+    ownerUserId:process.env.TELEGRAM_OWNER_USER_ID,
+    telegram
+   });
   }
   res.sendStatus(200);
  }catch(error){
