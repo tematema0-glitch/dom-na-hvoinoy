@@ -194,7 +194,7 @@ app.post('/api/bookings',async(req,res)=>{
   bookingAttempt?.rollback?.();
   throw error;
  }
- sendPending().catch(()=>{});
+ sendPending().catch(error=>console.error('Telegram outbox delivery failed',error.code||error.name));
  res.status(201).json({...booking,availability:booking.status==='waitlist'?'waitlist':'request'});
 });
 
@@ -252,7 +252,7 @@ async function createReward(x,ownerCreated=false){
  });
 }
 
-app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const x=req.body||{}; try{ switch(x.action){
+app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const x=req.body||{};let statusNotificationQueued=false; try{ switch(x.action){
  case 'blockDates': {if(!validRange(x.arrival,x.departure)||!['blocked','booked'].includes(x.kind||'blocked'))return res.status(400).json({error:'Проверьте период блокировки'});await transaction(async client=>{await lockBookingDates(client);const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[x.arrival,x.departure]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});await client.query('INSERT INTO calendar_blocks(id,arrival,departure,kind,note) VALUES($1,$2,$3,$4,$5)',[id(),x.arrival,x.departure,x.kind||'blocked',String(x.note||'').slice(0,500)]);});break;}
  case 'removeBlock': await pool.query('DELETE FROM calendar_blocks WHERE id=$1',[x.id]);break;
  case 'setPrices': {
@@ -276,20 +276,28 @@ app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const 
  }
  case 'memberNote': await pool.query('UPDATE members SET note=$1 WHERE id=$2',[x.note||'',x.memberId]);break;
  case 'deductPoints': {const points=Number(x.points),requestId=String(x.requestId||'');if(!x.memberId||!Number.isInteger(points)||points<1||points>100000||!requestId||requestId.length>128)return res.status(400).json({error:'Проверьте сумму списания'});await transaction(async client=>{const old=await client.query('SELECT 1 FROM point_ledger WHERE request_id=$1',[requestId]);if(old.rowCount)return;const member=await client.query('SELECT id FROM members WHERE id=$1 FOR UPDATE',[x.memberId]);if(!member.rowCount)throw Object.assign(new Error('Участник не найден'),{status:400});const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN kind IN ('earned','release') THEN points ELSE -points END),0)::int AS points FROM point_ledger WHERE member_id=$1",[x.memberId]);if(balance.rows[0].points<points)throw Object.assign(new Error('Недостаточно баллов'),{status:400});await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id) VALUES($1,$2,'deducted',$3,$4) ON CONFLICT(request_id) DO NOTHING",[x.memberId,points,String(x.reason||'').slice(0,500),requestId]);});break;}
- case 'bookingStatus': {if(!['waitlist','request','confirmed','completed','cancelled'].includes(x.status))return res.status(400).json({error:'Некорректный статус'});await transaction(async client=>{const current=await client.query('SELECT * FROM bookings WHERE id=$1 AND archived=false FOR UPDATE',[x.id]);if(!current.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});const existing=current.rows[0];await lockBookingDates(client);if(x.status==='confirmed'){if(!['request','waitlist','confirmed'].includes(existing.status))throw Object.assign(new Error('Нельзя подтвердить бронь из текущего статуса'),{status:409});const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[existing.arrival,existing.departure,existing.id]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});}if(x.status==='completed'){if(existing.status!=='confirmed')throw Object.assign(new Error('Завершить можно только подтверждённую бронь'),{status:409});if(x.paid!==true)throw Object.assign(new Error('Для завершения необходимо подтвердить оплату'),{status:409});if(Date.now()<Date.parse(`${existing.departure}T07:00:00Z`)&&x.acceptEarlyRisk!==true)throw Object.assign(new Error('Время выезда ещё не наступило'),{status:409});}const q=await client.query('UPDATE bookings SET status=$1,early_credited=CASE WHEN $1=\'completed\' AND $3 THEN true ELSE early_credited END WHERE id=$2 RETURNING *',[x.status,x.id,x.acceptEarlyRisk===true]);const bk=q.rows[0];if(x.status==='completed'&&bk.referrer)await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,booking_id) VALUES($1,$2,'earned','Завершённое проживание',$3,$4) ON CONFLICT(request_id) DO NOTHING",[bk.referrer,bk.nights,'booking:'+bk.id,bk.id]);});break;}
+ case 'bookingStatus': {if(!['waitlist','request','confirmed','completed','cancelled'].includes(x.status))return res.status(400).json({error:'Некорректный статус'});await transaction(async client=>{const current=await client.query('SELECT * FROM bookings WHERE id=$1 AND archived=false FOR UPDATE',[x.id]);if(!current.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});const existing=current.rows[0];await lockBookingDates(client);if(x.status==='confirmed'){if(!['request','waitlist','confirmed'].includes(existing.status))throw Object.assign(new Error('Нельзя подтвердить бронь из текущего статуса'),{status:409});const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[existing.arrival,existing.departure,existing.id]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});}if(x.status==='completed'){if(existing.status!=='confirmed')throw Object.assign(new Error('Завершить можно только подтверждённую бронь'),{status:409});if(x.paid!==true)throw Object.assign(new Error('Для завершения необходимо подтвердить оплату'),{status:409});if(Date.now()<Date.parse(`${existing.departure}T07:00:00Z`)&&x.acceptEarlyRisk!==true)throw Object.assign(new Error('Время выезда ещё не наступило'),{status:409});}const q=await client.query('UPDATE bookings SET status=$1,early_credited=CASE WHEN $1=\'completed\' AND $3 THEN true ELSE early_credited END WHERE id=$2 RETURNING *',[x.status,x.id,x.acceptEarlyRisk===true]);const bk=q.rows[0];if(existing.status!==x.status&&['confirmed','cancelled'].includes(x.status)){await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bk.id,{type:'booking-status',status:x.status,name:bk.name,phone:bk.phone,arrival:bk.arrival,departure:bk.departure,guests:bk.guests}]);statusNotificationQueued=true;}if(x.status==='completed'&&bk.referrer)await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,booking_id) VALUES($1,$2,'earned','Завершённое проживание',$3,$4) ON CONFLICT(request_id) DO NOTHING",[bk.referrer,bk.nights,'booking:'+bk.id,bk.id]);});break;}
  case 'releaseDates': await pool.query('UPDATE bookings SET dates_released=true WHERE id=$1',[x.id]);break;
  case 'deleteBooking': {if(typeof x.id!=='string'||!x.id.trim())throw Object.assign(new Error('Укажите бронь для архивации'),{status:400});await transaction(async client=>{await lockBookingDates(client);const archived=await client.query('UPDATE bookings SET archived=true,dates_released=true WHERE id=$1 RETURNING id',[x.id]);if(!archived.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});});break;}
  case 'reward': await createReward(x);break;
  case 'memberReward': await createReward(x,true);break;
  case 'rewardStatus': {if(!['requested','approved','issued','rejected'].includes(x.status))return res.status(400).json({error:'Некорректный статус награды'});await transaction(async client=>{const found=await client.query('SELECT * FROM rewards WHERE id=$1 FOR UPDATE',[x.id]);const rw=found.rows[0];if(!rw)return;const allowed={requested:['requested','approved','issued','rejected'],approved:['approved','issued','rejected'],issued:['issued'],rejected:['rejected']};if(!allowed[rw.status]?.includes(x.status))throw Object.assign(new Error('Недопустимый переход статуса награды'),{status:400});await client.query('UPDATE rewards SET status=$1,updated_at=now() WHERE id=$2',[x.status,x.id]);if(x.status==='rejected')await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,reward_id) VALUES($1,$2,'release','Награда отклонена',$3,$4) ON CONFLICT(request_id) DO NOTHING",[rw.member_id,rw.points,'reward-release:'+rw.id,rw.id]);if(x.status==='issued'){await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,reward_id) VALUES($1,$2,'release','Резерв награды использован',$3,$4) ON CONFLICT(request_id) DO NOTHING",[rw.member_id,rw.points,'reward-settle:'+rw.id,rw.id]);await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,reward_id) VALUES($1,$2,'spent','Награда выдана',$3,$4) ON CONFLICT(request_id) DO NOTHING",[rw.member_id,rw.points,'reward-spent:'+rw.id,rw.id]);}});break;}
  default:return res.status(400).json({error:'Неизвестное действие'}); }
+ if(statusNotificationQueued)sendPending().catch(error=>console.error('Telegram outbox retry failed',error.code||error.name));
  res.json({ok:true}); }catch(e){console.error('Club API operation failed',e.code||e.name);res.status(e.status||400).json({error:e.message||'Ошибка'});} });
 
 async function telegram(method,payload={}){const token=process.env.TELEGRAM_BOT_TOKEN;if(!token)throw Error('Telegram is not configured');const r=await fetch(`https://api.telegram.org/bot${token}/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Telegram request failed');const j=await r.json();if(!j.ok)throw Error('Telegram request failed');return j.result;}
+function isTelegramOwnerCallback(callback){
+ const ownerChatId=process.env.TELEGRAM_OWNER_CHAT_ID;
+ const chat=callback?.message?.chat;
+ const user=callback?.from;
+ if(!ownerChatId||String(chat?.id??'')!==String(ownerChatId)||!user?.id||user.is_bot)return false;
+ const ownerUserId=process.env.TELEGRAM_OWNER_USER_ID;
+ return ownerUserId?String(user.id)===ownerUserId:chat.type==='private'&&String(user.id)===String(chat.id);
+}
 async function handleTelegramCallback(callback){
  if(!callback?.id)return;
- const ownerChatId=process.env.TELEGRAM_OWNER_CHAT_ID;
- if(!ownerChatId||String(callback.message?.chat?.id??'')!==String(ownerChatId)){
+ if(!isTelegramOwnerCallback(callback)){
   await telegram('answerCallbackQuery',{callback_query_id:callback.id,text:'Это действие доступно только владельцу.',show_alert:true});
   return;
  }
@@ -307,33 +315,107 @@ async function handleTelegramCallback(callback){
   const booking=found.rows[0];
   if(booking.archived)return {notice:'Бронь уже убрана из истории.',showAlert:true};
   if(action==='bc'){
-   if(booking.status==='confirmed')return {notice:'Бронь уже подтверждена.',messageStatus:'✅ Бронь подтверждена'};
+   if(booking.status==='confirmed')return {notice:'Бронирование уже подтверждено.',messageStatus:'✅ Бронирование подтверждено'};
    if(!['request','waitlist'].includes(booking.status))return {notice:'Эту бронь нельзя подтвердить из текущего статуса.',showAlert:true};
    const conflict=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND dates_released=false AND status IN ('confirmed','completed') AND arrival<$2 AND departure>$1 LIMIT 1",[booking.arrival,booking.departure,booking.id]);
    if(conflict.rowCount)return {notice:'Даты уже заняты. Бронь не изменена.',showAlert:true};
    const updated=await client.query("UPDATE bookings SET status='confirmed' WHERE id=$1 AND archived=false AND status IN ('request','waitlist') RETURNING id",[booking.id]);
    if(!updated.rowCount)return {notice:'Статус брони уже изменился. Обновите кабинет владельца.',showAlert:true};
-   return {notice:'Бронь подтверждена.',messageStatus:'✅ Бронь подтверждена'};
+   return {notice:'Бронирование подтверждено.',messageStatus:'✅ Бронирование подтверждено'};
   }
-  if(booking.status==='cancelled')return {notice:'Заявка уже отменена.',messageStatus:'❌ Заявка отменена'};
+  if(booking.status==='cancelled')return {notice:'Бронирование уже отменено.',messageStatus:'❌ Бронирование отменено'};
   if(!['request','waitlist','confirmed'].includes(booking.status))return {notice:'Эту бронь нельзя отменить из текущего статуса.',showAlert:true};
   const updated=await client.query("UPDATE bookings SET status='cancelled' WHERE id=$1 AND archived=false AND status IN ('request','waitlist','confirmed') RETURNING id",[booking.id]);
   if(!updated.rowCount)return {notice:'Статус брони уже изменился. Обновите кабинет владельца.',showAlert:true};
-  return {notice:'Заявка отменена.',messageStatus:'❌ Заявка отменена'};
+  return {notice:'Бронирование отменено.',messageStatus:'❌ Бронирование отменено'};
  });
  try{await telegram('answerCallbackQuery',{callback_query_id:callback.id,text:result.notice,show_alert:!!result.showAlert});}catch(error){console.error('Telegram callback acknowledgement failed',error.code||error.name);}
  if(result.messageStatus&&callback.message?.message_id){
-  const original=String(callback.message.text||'').replace(/\n\n(?:✅ Бронь подтверждена|❌ Заявка отменена)$/,'');
+  const original=String(callback.message.text||'').replace(/\n\n(?:✅ (?:Бронирование|Бронь) подтвержден[ао]|❌ (?:Бронирование|Заявка) отменен[ао])$/,'');
   const text=`${original}\n\n${result.messageStatus}`;
   if(text!==callback.message.text||callback.message.reply_markup?.inline_keyboard?.length){
    try{await telegram('editMessageText',{chat_id:callback.message.chat.id,message_id:callback.message.message_id,text,reply_markup:{inline_keyboard:[]}});}catch(error){console.error('Telegram booking message update failed',error.code||error.name);}
   }
  }
 }
-async function sendPending(){if(!pool||!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return;const client=await pool.connect();try{await client.query('BEGIN');const q=await client.query("SELECT * FROM telegram_outbox WHERE state IN ('pending','failed') ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED");for(const row of q.rows){try{const p=row.payload,bookingId=p.id||row.booking_id;const keyboard=typeof bookingId==='string'&&Buffer.byteLength(`bc:${bookingId}`,'utf8')<=64?{inline_keyboard:[[{text:'✅ Подтвердить',callback_data:`bc:${bookingId}`},{text:'❌ Отменить',callback_data:`bx:${bookingId}`}]]}:undefined;await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text:`Новая заявка: ${p.name}\n${p.phone}\n${p.arrival} — ${p.departure}\nГостей: ${p.guests}\nСтоимость: ${p.total} ₽`,...(keyboard?{reply_markup:keyboard}:{})});await client.query("UPDATE telegram_outbox SET state='sent',attempts=attempts+1,attempted_at=now(),last_error=NULL WHERE id=$1",[row.id]);}catch{await client.query("UPDATE telegram_outbox SET state='failed',attempts=attempts+1,attempted_at=now(),last_error='Delivery failed' WHERE id=$1",[row.id]);}}await client.query('COMMIT');}catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}}
+async function sendPending(){
+ if(!pool||!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return;
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const q=await client.query("SELECT * FROM telegram_outbox WHERE state IN ('pending','failed') ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED");
+  for(const row of q.rows){
+   const p=row.payload;
+   const bookingId=p.id||row.booking_id;
+   const isStatus=p.type==='booking-status';
+   const keyboard=!isStatus&&typeof bookingId==='string'&&Buffer.byteLength(`bc:${bookingId}`,'utf8')<=64
+    ?{inline_keyboard:[[{text:'✅ Подтвердить',callback_data:`bc:${bookingId}`},{text:'❌ Отменить',callback_data:`bx:${bookingId}`}]]}
+    :undefined;
+   const text=isStatus
+    ?`${p.status==='confirmed'?'✅ БРОНЬ ПОДТВЕРЖДЕНА':'❌ БРОНЬ ОТМЕНЕНА'}\n\nГость: ${p.name}\nТелефон: ${p.phone}\nЗаезд: ${p.arrival}\nВыезд: ${p.departure}\nГостей: ${p.guests}`
+    :`Новая заявка: ${p.name}\n${p.phone}\n${p.arrival} — ${p.departure}\nГостей: ${p.guests}\nСтоимость: ${p.total} ₽`;
+   try{
+    await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text,...(keyboard?{reply_markup:keyboard}:{})});
+    await client.query("UPDATE telegram_outbox SET state='sent',attempts=attempts+1,attempted_at=now(),last_error=NULL WHERE id=$1",[row.id]);
+   }catch(error){
+    console.error('Telegram outbox delivery failed',row.id,error.code||error.name);
+    await client.query("UPDATE telegram_outbox SET state='failed',attempts=attempts+1,attempted_at=now(),last_error='Delivery failed' WHERE id=$1",[row.id]);
+   }
+  }
+  await client.query('COMMIT');
+ }catch(error){
+  await client.query('ROLLBACK').catch(()=>{});
+  throw error;
+ }finally{client.release();}
+}
 app.get('/api/telegram',async(req,res)=>{const q=await pool.query("SELECT count(*)::int pending FROM telegram_outbox WHERE state IN ('pending','failed')");res.json({configured:!!process.env.TELEGRAM_BOT_TOKEN,connected:!!process.env.TELEGRAM_OWNER_CHAT_ID,pending:q.rows[0].pending});});
-app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{if(req.body?.action==='test'){if(!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text:'Коттедж на Хвойной: тестовое сообщение.'});return res.json({ok:true});}if(req.body?.action==='retry'){await sendPending();return res.json({ok:true});}return res.status(400).json({error:'Для подключения Telegram настройте бота и webhook'});}catch{return res.status(503).json({error:'Не удалось выполнить запрос Telegram'});}});
-app.post('/api/telegram/webhook',(req,res)=>{const secret=process.env.TELEGRAM_WEBHOOK_SECRET;if(!secret)return res.status(503).json({error:'Webhook is not configured'});const supplied=Buffer.from(String(req.get('x-telegram-bot-api-secret-token')||'')),expected=Buffer.from(secret);if(supplied.length!==expected.length||!crypto.timingSafeEqual(supplied,expected))return res.sendStatus(403);const callback=req.body?.callback_query;res.sendStatus(200);if(callback)handleTelegramCallback(callback).catch(async error=>{console.error('Telegram callback failed',error.code||error.name);try{await telegram('answerCallbackQuery',{callback_query_id:callback.id,text:'Не удалось обработать действие. Обновите кабинет владельца.',show_alert:true});}catch(telegramError){console.error('Telegram callback notification failed',telegramError.code||telegramError.name);}});});
+app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
+ if(req.body?.action==='test'){
+  if(!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
+  await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text:'Коттедж на Хвойной: тестовое сообщение.'});
+  return res.json({ok:true});
+ }
+ if(req.body?.action==='retry'){
+  if(!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
+  await sendPending();
+  return res.json({ok:true});
+ }
+ if(req.body?.action==='webhookInfo'){
+  const scopes=[null,{type:'all_private_chats'},{type:'all_group_chats'},{type:'all_chat_administrators'}];
+  if(process.env.TELEGRAM_OWNER_CHAT_ID)scopes.push({type:'chat',chat_id:process.env.TELEGRAM_OWNER_CHAT_ID});
+  const [info,...commands]=await Promise.all([
+   telegram('getWebhookInfo'),
+   ...scopes.map(scope=>telegram('getMyCommands',scope?{scope}:{}))
+  ]);
+  const expectedUrl=new URL('https://собери-своих.рф/api/telegram/webhook').href;
+  return res.json({urlConfigured:info.url===expectedUrl||info.url===`https://собери-своих.рф/api/telegram/webhook`,expectedUrl,pendingUpdateCount:info.pending_update_count,lastErrorDate:info.last_error_date||null,lastErrorMessage:info.last_error_message||null,commands:commands.map((list,index)=>({scope:scopes[index]?.type||'default',items:list.map(command=>command.command)}))});
+ }
+ if(req.body?.action==='cleanup'){
+  if(!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
+  const scopes=[null,{type:'all_private_chats'},{type:'all_group_chats'},{type:'all_chat_administrators'},{type:'chat',chat_id:process.env.TELEGRAM_OWNER_CHAT_ID}];
+  await Promise.all(scopes.map(scope=>telegram('deleteMyCommands',scope?{scope}:{})));
+  await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text:'Клавиатура бота обновлена.',reply_markup:{remove_keyboard:true}});
+  return res.json({ok:true});
+ }
+ return res.status(400).json({error:'Неизвестное действие Telegram'});
+}catch(error){console.error('Telegram admin action failed',error.code||error.name);return res.status(503).json({error:'Не удалось выполнить действие Telegram'});}});
+app.post('/api/telegram/webhook',async(req,res,next)=>{
+ const secret=process.env.TELEGRAM_WEBHOOK_SECRET;
+ if(!secret)return res.status(503).json({error:'Webhook is not configured'});
+ const supplied=Buffer.from(String(req.get('x-telegram-bot-api-secret-token')||'')),expected=Buffer.from(secret);
+ if(supplied.length!==expected.length||!crypto.timingSafeEqual(supplied,expected))return res.sendStatus(403);
+ try{
+  if(req.body?.callback_query){
+   console.info('Telegram callback received');
+   await handleTelegramCallback(req.body.callback_query);
+  }
+  res.sendStatus(200);
+ }catch(error){
+  console.error('Telegram callback processing failed',error.code||error.name);
+  next(error);
+ }
+});
+setInterval(()=>sendPending().catch(error=>console.error('Telegram outbox retry failed',error.code||error.name)),60*1000).unref();
 
 // Protected API prepared for a future ChatGPT/MCP connector.
 app.get('/admin-api/health',(req,res)=>{if(!requireAdmin(req,res))return;res.json({ok:true,service:'dom-na-hvoinoy'});});

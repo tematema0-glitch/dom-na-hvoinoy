@@ -17,6 +17,7 @@ Create a local `.env` file from `.env.example` and set:
 - `NODE_ENV`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_OWNER_CHAT_ID`
+- `TELEGRAM_OWNER_USER_ID` — Telegram user ID allowed to use booking buttons; required for group chats
 - `TELEGRAM_WEBHOOK_SECRET`
 
 No real secrets should be committed to the repository.
@@ -33,11 +34,15 @@ For deployment, set the required environment variables in the Amvera UI and keep
 - `TELEGRAM_WEBHOOK_SECRET` — set as SECRET
 - `DATABASE_URL` — preferably set as SECRET
 - `OWNER_PHONE` — can be a normal variable or a secret
+- `TELEGRAM_OWNER_CHAT_ID` — the owner's private chat ID or the notification group ID
+- `TELEGRAM_OWNER_USER_ID` — the owner's Telegram user ID; required when notifications go to a group
 
 Then run:
 - `npm ci`
 - `npm start`
 - `PORT` as the exposed port value
+
+The owner-only `/api/telegram` action `webhookInfo` checks the configured webhook URL and delivery errors without exposing the bot token. The `cleanup` action removes registered bot commands and the owner's persistent reply keyboard; it does not remove inline booking buttons from old messages.
 
 ## Notes
 - `schema.sql` creates the production database structure.
