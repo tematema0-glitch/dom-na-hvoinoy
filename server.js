@@ -374,7 +374,9 @@ app.get('/',async(req,res,next)=>{try{
   `<script type="application/ld+json">${structuredData}</script>`
  ].join('');
  html=html.replace(/<\/head>/i,`${seoTags}</head>`);
- const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>'].filter(script=>!html.includes(script)).join('');
+ const styles=['<link rel="stylesheet" href="/booking-payment-info.css">'].filter(style=>!html.includes(style)).join('');
+ if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
  res.type('html').send(html);
 }catch(error){next(error);}});

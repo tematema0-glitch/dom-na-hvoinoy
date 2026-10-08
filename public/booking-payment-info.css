@@ -1,0 +1,139 @@
+.booking-payment-info,
+.booking-payment-info *,
+.booking-payment-info__rules,
+.booking-payment-info__rules *{
+ box-sizing:border-box;
+}
+
+.booking-payment-info{
+ width:100%;
+ max-width:100%;
+ min-width:0;
+ margin:18px 0 16px;
+ padding:18px 20px;
+ overflow-wrap:anywhere;
+ color:#f4f5f2;
+ background:#292c30;
+ border:1px solid #ffffff12;
+ border-radius:18px;
+ font-family:Manrope,sans-serif;
+}
+
+.booking-payment-info__heading{
+ display:flex;
+ align-items:center;
+ gap:10px;
+ min-width:0;
+}
+
+.booking-payment-info__icon{
+ display:grid;
+ flex:0 0 22px;
+ width:22px;
+ height:22px;
+ place-items:center;
+ color:#dbff00;
+ border:1px solid #dbff00;
+ border-radius:50%;
+ font-size:14px;
+ font-weight:700;
+ line-height:1;
+}
+
+.booking-payment-info__heading h3{
+ min-width:0;
+ margin:0;
+ color:#dbff00;
+ font-family:Unbounded,Manrope,sans-serif;
+ font-size:12px;
+ font-weight:500;
+ line-height:1.5;
+ letter-spacing:.04em;
+}
+
+.booking-payment-info__intro{
+ margin:8px 0 12px;
+ color:#d4d6db;
+ font-size:14px;
+ line-height:1.55;
+}
+
+.booking-payment-info__payments{
+ display:grid;
+ grid-template-columns:repeat(2,minmax(0,1fr));
+ gap:0;
+}
+
+.booking-payment-info__payment{
+ min-width:0;
+ padding:0 16px;
+}
+
+.booking-payment-info__payment:first-child{
+ padding-left:0;
+}
+
+.booking-payment-info__payment+ .booking-payment-info__payment{
+ border-left:1px solid #ffffff24;
+}
+
+.booking-payment-info__payment h4,
+.booking-payment-info__rules h4{
+ margin:0 0 6px;
+ color:#fff;
+ font-size:14px;
+ font-weight:700;
+ line-height:1.5;
+}
+
+.booking-payment-info__payment p,
+.booking-payment-info__rules p{
+ margin:0;
+ color:#c8cad0;
+ font-size:13px;
+ line-height:1.6;
+}
+
+.booking-payment-info__note{
+ margin:13px 0 0;
+ padding-top:11px;
+ color:#dbff00;
+ border-top:1px solid #ffffff24;
+ font-size:12px;
+ font-weight:700;
+ line-height:1.55;
+}
+
+.booking-payment-info__rules{
+ margin-top:14px;
+ padding-top:14px;
+ border-top:1px solid #ffffff24;
+}
+
+.booking-payment-info__rules p+p{
+ margin-top:8px;
+}
+
+@media(max-width:520px){
+ .booking-payment-info{
+  margin:14px 0;
+  padding:16px;
+  border-radius:16px;
+ }
+
+ .booking-payment-info__payments{
+  grid-template-columns:minmax(0,1fr);
+  gap:12px;
+ }
+
+ .booking-payment-info__payment,
+ .booking-payment-info__payment:first-child{
+  padding:0;
+ }
+
+ .booking-payment-info__payment+ .booking-payment-info__payment{
+  padding-top:12px;
+  border-top:1px solid #ffffff24;
+  border-left:0;
+ }
+}
