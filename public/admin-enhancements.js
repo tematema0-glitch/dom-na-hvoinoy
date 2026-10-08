@@ -30,9 +30,55 @@ function installStyles() {
   style.textContent = `
     .admin-enhancement-toggle{display:inline-flex;align-items:center;max-width:100%;margin-inline-start:.65em;padding:.3em .65em;border:1px solid currentColor;border-radius:999px;background:transparent;color:inherit;font:inherit;font-size:.72em;line-height:1.25;white-space:normal;vertical-align:middle;cursor:pointer}
     .manual-blocks-toggle{margin:12px 0 0}
+    .telegram-reconnect-button{padding:.65em 1em;border:1px solid currentColor;border-radius:999px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+    .telegram-webhook-info{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
     @media(max-width:600px){.admin-enhancement-toggle{margin-inline-start:.35em}.manual-blocks-toggle{display:flex;margin-inline-start:0}}
   `;
   document.head.append(style);
+}
+
+function updateTelegramSettings() {
+  const section = document.querySelector('.telegram-settings');
+  const actions = section?.querySelector('.actions');
+  if (!section || !actions) return;
+  installStyles();
+  if (actions.querySelector('[data-telegram-reconnect]')) return;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'telegram-reconnect-button';
+  button.dataset.telegramReconnect = '';
+  button.textContent = 'Переподключить Telegram';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    let output = section.querySelector('[data-telegram-webhook-info]');
+    if (!output) {
+      output = document.createElement('pre');
+      output.dataset.telegramWebhookInfo = '';
+      output.setAttribute('aria-live', 'polite');
+      output.className = 'telegram-webhook-info';
+      section.append(output);
+    }
+    output.setAttribute('role', 'status');
+    output.textContent = 'Переподключаем Telegram…';
+    try {
+      const response = await fetch('/api/telegram', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reconnectWebhook' })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Не удалось переподключить Telegram');
+      output.textContent = JSON.stringify(result.info, null, 2);
+    } catch (error) {
+      output.setAttribute('role', 'alert');
+      output.textContent = error instanceof Error ? error.message : 'Не удалось переподключить Telegram';
+    } finally {
+      button.disabled = false;
+    }
+  });
+  actions.append(button);
 }
 
 function createToggle(key) {
@@ -107,6 +153,7 @@ function updateManualBlocks(calendar) {
 }
 
 function update() {
+  updateTelegramSettings();
   const memberSection = document.querySelector('.member-section');
   if (!memberSection) return;
   installStyles();

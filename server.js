@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendTelegramOutbox } from './telegram-outbox.js';
 import { handleTelegramStart } from './telegram-start.js';
+import { reconnectTelegramWebhook } from './telegram-webhook.js';
 
 const { Pool } = pg;
 const app = express();
@@ -352,6 +353,13 @@ app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
   if(!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
   await sendPending(true);
   return res.json({ok:true});
+ }
+ if(req.body?.action==='reconnectWebhook'){
+  const info=await reconnectTelegramWebhook(telegram,{
+   token:process.env.TELEGRAM_BOT_TOKEN,
+   secret:process.env.TELEGRAM_WEBHOOK_SECRET
+  });
+  return res.json({ok:true,info});
  }
  if(req.body?.action==='webhookInfo'){
   const scopes=[null,{type:'all_private_chats'},{type:'all_group_chats'},{type:'all_chat_administrators'}];
