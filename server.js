@@ -4,6 +4,7 @@ import { readFile } from 'fs/promises';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { sendTelegramOutbox } from './telegram-outbox.js';
 
 const { Pool } = pg;
 const app = express();
@@ -338,36 +339,7 @@ async function handleTelegramCallback(callback){
   }
  }
 }
-async function sendPending(){
- if(!pool||!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return;
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
-  const q=await client.query("SELECT * FROM telegram_outbox WHERE state IN ('pending','failed') ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED");
-  for(const row of q.rows){
-   const p=row.payload;
-   const bookingId=p.id||row.booking_id;
-   const isStatus=p.type==='booking-status';
-   const keyboard=!isStatus&&typeof bookingId==='string'&&Buffer.byteLength(`bc:${bookingId}`,'utf8')<=64
-    ?{inline_keyboard:[[{text:'✅ Подтвердить',callback_data:`bc:${bookingId}`},{text:'❌ Отменить',callback_data:`bx:${bookingId}`}]]}
-    :undefined;
-   const text=isStatus
-    ?`${p.status==='confirmed'?'✅ БРОНЬ ПОДТВЕРЖДЕНА':'❌ БРОНЬ ОТМЕНЕНА'}\n\nГость: ${p.name}\nТелефон: ${p.phone}\nЗаезд: ${p.arrival}\nВыезд: ${p.departure}\nГостей: ${p.guests}`
-    :`Новая заявка: ${p.name}\n${p.phone}\n${p.arrival} — ${p.departure}\nГостей: ${p.guests}\nСтоимость: ${p.total} ₽`;
-   try{
-    await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text,...(keyboard?{reply_markup:keyboard}:{})});
-    await client.query("UPDATE telegram_outbox SET state='sent',attempts=attempts+1,attempted_at=now(),last_error=NULL WHERE id=$1",[row.id]);
-   }catch(error){
-    console.error('Telegram outbox delivery failed',row.id,error.code||error.name);
-    await client.query("UPDATE telegram_outbox SET state='failed',attempts=attempts+1,attempted_at=now(),last_error='Delivery failed' WHERE id=$1",[row.id]);
-   }
-  }
-  await client.query('COMMIT');
- }catch(error){
-  await client.query('ROLLBACK').catch(()=>{});
-  throw error;
- }finally{client.release();}
-}
+const sendPending=(forceRetry=false)=>sendTelegramOutbox({pool,telegram,forceRetry});
 app.get('/api/telegram',async(req,res)=>{const q=await pool.query("SELECT count(*)::int pending FROM telegram_outbox WHERE state IN ('pending','failed')");res.json({configured:!!process.env.TELEGRAM_BOT_TOKEN,connected:!!process.env.TELEGRAM_OWNER_CHAT_ID,pending:q.rows[0].pending});});
 app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
  if(req.body?.action==='test'){
@@ -377,7 +349,7 @@ app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
  }
  if(req.body?.action==='retry'){
   if(!process.env.TELEGRAM_BOT_TOKEN||!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
-  await sendPending();
+  await sendPending(true);
   return res.json({ok:true});
  }
  if(req.body?.action==='webhookInfo'){
@@ -393,9 +365,9 @@ app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
  if(req.body?.action==='cleanup'){
   if(!process.env.TELEGRAM_OWNER_CHAT_ID)return res.status(503).json({error:'Telegram не настроен'});
   const scopes=[null,{type:'all_private_chats'},{type:'all_group_chats'},{type:'all_chat_administrators'},{type:'chat',chat_id:process.env.TELEGRAM_OWNER_CHAT_ID}];
-  await Promise.all(scopes.map(scope=>telegram('deleteMyCommands',scope?{scope}:{})));
+  const commands=await Promise.all(scopes.map(scope=>telegram('getMyCommands',scope?{scope}:{})));
   await telegram('sendMessage',{chat_id:process.env.TELEGRAM_OWNER_CHAT_ID,text:'Клавиатура бота обновлена.',reply_markup:{remove_keyboard:true}});
-  return res.json({ok:true});
+  return res.json({ok:true,preservedCommands:commands.flat().map(command=>command.command)});
  }
  return res.status(400).json({error:'Неизвестное действие Telegram'});
 }catch(error){console.error('Telegram admin action failed',error.code||error.name);return res.status(503).json({error:'Не удалось выполнить действие Telegram'});}});
