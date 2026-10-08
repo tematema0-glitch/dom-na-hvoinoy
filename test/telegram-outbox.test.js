@@ -75,6 +75,9 @@ test('pending messages have priority and failed Telegram sends remain retryable'
  });
  assert.deepEqual(selected[0],Array.from({length:10},(_,index)=>index+1));
  assert.equal(sent.length,10);
+ assert.deepEqual(sent[0].reply_markup.inline_keyboard,[
+  [{text:'✅ Подтвердить',callback_data:'bc:booking-1'},{text:'❌ Отменить',callback_data:'bx:booking-1'}]
+ ]);
  assert.equal(rows[0].state,'failed');
  assert.equal(rows[0].attempts,1);
  assert.equal(rows.find(row=>row.id===20).attempts,1);

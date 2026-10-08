@@ -30,67 +30,9 @@ function installStyles() {
   style.textContent = `
     .admin-enhancement-toggle{display:inline-flex;align-items:center;max-width:100%;margin-inline-start:.65em;padding:.3em .65em;border:1px solid currentColor;border-radius:999px;background:transparent;color:inherit;font:inherit;font-size:.72em;line-height:1.25;white-space:normal;vertical-align:middle;cursor:pointer}
     .manual-blocks-toggle{margin:12px 0 0}
-    .telegram-cleanup-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 16px}
-    .telegram-cleanup-button{padding:9px 13px;border:1px solid #73777c;border-radius:12px;background:#292c30;color:#f4f5f2;font:600 13px Manrope,sans-serif;cursor:pointer}
-    .telegram-cleanup-button:hover:not(:disabled){border-color:#dbff00}
-    .telegram-cleanup-button:disabled{opacity:.65;cursor:wait}
-    .telegram-cleanup-result{flex-basis:100%;margin:0;color:#d4d6db;font-size:13px;line-height:1.5}
-    .telegram-cleanup-result[data-state="error"]{color:#ffb4a9}
-    .telegram-cleanup-result[data-state="success"]{color:#dbff00}
     @media(max-width:600px){.admin-enhancement-toggle{margin-inline-start:.35em}.manual-blocks-toggle{display:flex;margin-inline-start:0}}
   `;
   document.head.append(style);
-}
-
-function updateTelegramCleanup(calendar) {
-  const heading = Array.from(calendar.querySelectorAll('h2'))
-    .find(element => element.textContent.trim().startsWith('Цены на проживание'));
-  if (!heading || calendar.querySelector('[data-telegram-cleanup-tools]')) return;
-
-  const tools = document.createElement('div');
-  tools.className = 'telegram-cleanup-tools';
-  tools.dataset.telegramCleanupTools = '';
-
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'telegram-cleanup-button';
-  button.textContent = 'Очистить старое меню Telegram';
-
-  const result = document.createElement('p');
-  result.className = 'telegram-cleanup-result';
-  result.setAttribute('role', 'status');
-  result.setAttribute('aria-live', 'polite');
-
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    result.dataset.state = '';
-    result.textContent = 'Очищаем меню Telegram…';
-    try {
-      const response = await fetch('/api/telegram', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cleanup' })
-      });
-      let payload;
-      try {
-        payload = await response.json();
-      } catch {
-        throw new Error(`Сервер вернул некорректный ответ (${response.status})`);
-      }
-      if (!response.ok) throw new Error(payload.error || `Ошибка сервера (${response.status})`);
-      const commandCount = payload.preservedCommands?.length ?? 0;
-      result.dataset.state = 'success';
-      result.textContent = `Старое меню очищено. Действующие команды сохранены (${commandCount}).`;
-    } catch (error) {
-      result.dataset.state = 'error';
-      result.textContent = error instanceof Error ? error.message : 'Не удалось очистить меню Telegram';
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  tools.append(button, result);
-  heading.after(tools);
 }
 
 function createToggle(key) {
@@ -170,10 +112,7 @@ function update() {
   installStyles();
   updateMembers(memberSection);
   updateBookings();
-  document.querySelectorAll('.owner-calendar').forEach(calendar => {
-    updateManualBlocks(calendar);
-    updateTelegramCleanup(calendar);
-  });
+  document.querySelectorAll('.owner-calendar').forEach(updateManualBlocks);
 }
 
 const observer = new MutationObserver(update);
