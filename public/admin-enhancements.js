@@ -32,9 +32,75 @@ function installStyles() {
     .manual-blocks-toggle{margin:12px 0 0}
     .telegram-reconnect-button{padding:.65em 1em;border:1px solid currentColor;border-radius:999px;background:transparent;color:inherit;font:inherit;cursor:pointer}
     .telegram-webhook-info{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+    .mail-notification-status{margin:0}
     @media(max-width:600px){.admin-enhancement-toggle{margin-inline-start:.35em}.manual-blocks-toggle{display:flex;margin-inline-start:0}}
   `;
   document.head.append(style);
+}
+
+function updateMailSettings() {
+  const telegramSection = document.querySelector('.telegram-settings');
+  if (!telegramSection || document.querySelector('[data-mail-notifications]')) return;
+  installStyles();
+
+  const section = document.createElement('section');
+  section.className = 'telegram-settings mail-notifications';
+  section.dataset.mailNotifications = '';
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Уведомления на почту';
+  const description = document.createElement('p');
+  description.textContent = 'Получайте письма о новых заявках на бронирование.';
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  const state = document.createElement('span');
+  state.className = 'badge';
+  state.setAttribute('aria-live', 'polite');
+  state.textContent = 'Проверяем настройки…';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'telegram-reconnect-button';
+  button.textContent = 'Отправить тестовое письмо';
+  button.disabled = true;
+  const output = document.createElement('p');
+  output.className = 'mail-notification-status';
+  output.setAttribute('role', 'status');
+  output.setAttribute('aria-live', 'polite');
+  actions.append(state, button);
+  section.append(heading, description, actions, output);
+  telegramSection.after(section);
+
+  fetch('/api/mail', { credentials: 'same-origin' })
+    .then(async response => {
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Не удалось проверить настройки почты');
+      state.textContent = result.configured ? 'Настроено' : 'Не настроено на сервере';
+      button.disabled = !result.configured;
+    })
+    .catch(error => {
+      state.textContent = error instanceof Error ? error.message : 'Не удалось проверить настройки почты';
+    });
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    output.textContent = 'Отправляем тестовое письмо…';
+    try {
+      const response = await fetch('/api/mail', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'test' })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Не удалось отправить тестовое письмо');
+      output.textContent = 'Тестовое письмо отправлено.';
+    } catch (error) {
+      output.setAttribute('role', 'alert');
+      output.textContent = error instanceof Error ? error.message : 'Не удалось отправить тестовое письмо';
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 function updateTelegramSettings() {
@@ -154,6 +220,7 @@ function updateManualBlocks(calendar) {
 
 function update() {
   updateTelegramSettings();
+  updateMailSettings();
   const memberSection = document.querySelector('.member-section');
   if (!memberSection) return;
   installStyles();

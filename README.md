@@ -19,6 +19,9 @@ Create a local `.env` file from `.env.example` and set:
 - `TELEGRAM_OWNER_CHAT_ID`
 - `TELEGRAM_OWNER_USER_ID` — Telegram user ID allowed to use booking buttons; required for group chats
 - `TELEGRAM_WEBHOOK_SECRET`
+- `MAIL_USER` — Mail.ru sender address
+- `MAIL_APP_PASSWORD` — Mail.ru external application password
+- `MAIL_TO` — booking notification recipient address
 
 No real secrets should be committed to the repository.
 
@@ -36,6 +39,9 @@ For deployment, set the required environment variables in the Amvera UI and keep
 - `OWNER_PHONE` — can be a normal variable or a secret
 - `TELEGRAM_OWNER_CHAT_ID` — the owner's private chat ID or the notification group ID
 - `TELEGRAM_OWNER_USER_ID` — the owner's Telegram user ID; required when notifications go to a group
+- `MAIL_USER` — Mail.ru sender address
+- `MAIL_APP_PASSWORD` — Mail.ru external application password; set as SECRET
+- `MAIL_TO` — booking notification recipient address
 
 Then run:
 - `npm ci`
@@ -43,6 +49,8 @@ Then run:
 - `PORT` as the exposed port value
 
 The owner-only `/api/telegram` action `webhookInfo` checks the configured webhook URL and registered commands without exposing the bot token. The owner's Telegram settings include a reconnect action that registers the webhook using `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET`, then displays the sanitized `getWebhookInfo` result. In the owner's private chat, `/start` removes the legacy reply keyboard without affecting inline booking buttons. Failed outbox messages retry automatically with increasing delays for up to eight delivery attempts and remain available for manual retry.
+
+Booking email notifications use `smtp.mail.ru` over SSL/TLS on port 465. All three `MAIL_*` variables must be set in Amvera to enable them; they are not stored in PostgreSQL. Booking email is dispatched after the booking transaction commits and does not delay the guest response. The owner can send a test message from the «Уведомления на почту» section in the owner cabinet.
 
 ## Notes
 - `schema.sql` creates the production database structure.

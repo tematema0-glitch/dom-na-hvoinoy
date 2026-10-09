@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { sendTelegramOutbox } from './telegram-outbox.js';
 import { handleTelegramStart } from './telegram-start.js';
 import { reconnectTelegramWebhook } from './telegram-webhook.js';
+import { createMailNotificationService, isMailConfigured, scheduleBookingEmail } from './booking-email.js';
 
 const { Pool } = pg;
 const app = express();
@@ -24,6 +25,7 @@ const PORT = Number(process.env.PORT || 3000);
 const sessions = new Map();
 const loginAttempts = new Map();
 const bookingPhoneAttempts = new Map();
+const mailNotifications = createMailNotificationService();
 const bookingPhoneAttemptWindow = 60 * 60 * 1000;
 const json = express.json({ limit: '256kb' });
 app.use(json);
@@ -125,7 +127,7 @@ async function balances(){ const q=await pool.query(`SELECT m.id, COALESCE(SUM(C
 async function invitedGuests(memberId){const q=await pool.query(`SELECT name,COUNT(*) FILTER(WHERE status<>'cancelled' AND archived=false)::int stays,COUNT(*) FILTER(WHERE status='completed' AND archived=false)::int completed_stays,COALESCE(SUM(nights) FILTER(WHERE status='completed' AND archived=false),0)::int completed_nights FROM bookings WHERE referrer=$1 GROUP BY name ORDER BY name`,[memberId]);return q.rows;}
 
 app.get('/healthz',async(req,res)=>{if(!pool)return res.json({ok:true,database:'not_configured'});try{await pool.query('SELECT 1');res.json({ok:true,database:'available'});}catch{res.status(503).json({ok:false,database:'unavailable'});}});
-app.use('/api',(req,res,next)=>{if(['/admin/login','/admin/logout','/telegram/webhook','/me'].includes(req.path))return next();if(!pool)return res.status(503).json({error:'Database is not configured'});next();});
+app.use('/api',(req,res,next)=>{if(['/admin/login','/admin/logout','/telegram/webhook','/me','/mail'].includes(req.path))return next();if(!pool)return res.status(503).json({error:'Database is not configured'});next();});
 
 app.get('/api/me',async(req,res)=>{
  const token=cookie(req).hvoinaya_device;
@@ -199,6 +201,7 @@ app.post('/api/bookings',async(req,res)=>{
  }
  sendPending().catch(error=>console.error('Telegram outbox delivery failed',error.code||error.name));
  res.status(201).json({...booking,availability:booking.status==='waitlist'?'waitlist':'request'});
+ if(isMailConfigured())scheduleBookingEmail(booking,{sendBooking:mailNotifications.sendBooking});
 });
 
 app.post('/api/admin/login',(req,res)=>{
@@ -342,6 +345,22 @@ async function handleTelegramCallback(callback){
  }
 }
 const sendPending=(forceRetry=false)=>sendTelegramOutbox({pool,telegram,forceRetry});
+app.get('/api/mail',(req,res)=>{
+ if(!requireAdmin(req,res))return;
+ res.json({configured:isMailConfigured()});
+});
+app.post('/api/mail',async(req,res)=>{
+ if(!requireAdmin(req,res))return;
+ if(req.body?.action!=='test')return res.status(400).json({error:'Неизвестное действие почты'});
+ if(!isMailConfigured())return res.status(503).json({error:'Почтовые уведомления не настроены'});
+ try{
+  await mailNotifications.sendTest();
+  return res.json({ok:true});
+ }catch(error){
+  console.error('Mail test delivery failed',error.code||error.name);
+  return res.status(503).json({error:'Не удалось отправить тестовое письмо'});
+ }
+});
 app.get('/api/telegram',async(req,res)=>{const q=await pool.query("SELECT count(*)::int pending FROM telegram_outbox WHERE state IN ('pending','failed')");res.json({configured:!!process.env.TELEGRAM_BOT_TOKEN,connected:!!process.env.TELEGRAM_OWNER_CHAT_ID,pending:q.rows[0].pending});});
 app.post('/api/telegram',async(req,res)=>{if(!requireAdmin(req,res))return;try{
  if(req.body?.action==='test'){
