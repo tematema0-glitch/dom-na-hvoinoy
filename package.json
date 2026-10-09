@@ -5,10 +5,12 @@
   "type": "module",
   "engines": { "node": ">=20" },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "express": "^5.1.0",
+    "nodemailer": "^10.0.16",
     "pg": "^8.16.3"
   }
 }
