@@ -117,3 +117,13 @@ export function scheduleBookingEmail(booking,{sendBooking,logger=console,schedul
   logger.error('Booking email delivery failed',error.code||error.name);
  }));
 }
+
+export function completeBookingSubmission(booking,{respond,notify}){
+ respond({
+  id:booking.id,
+  status:booking.status,
+  total:booking.total,
+  availability:booking.status==='waitlist'?'waitlist':'request'
+ });
+ notify(booking);
+}

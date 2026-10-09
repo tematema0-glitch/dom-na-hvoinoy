@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { sendTelegramOutbox } from './telegram-outbox.js';
 import { handleTelegramStart } from './telegram-start.js';
 import { reconnectTelegramWebhook } from './telegram-webhook.js';
-import { createMailNotificationService, isMailConfigured, scheduleBookingEmail } from './booking-email.js';
+import { completeBookingSubmission, createMailNotificationService, isMailConfigured, scheduleBookingEmail } from './booking-email.js';
 
 const { Pool } = pg;
 const app = express();
@@ -191,17 +191,19 @@ app.post('/api/bookings',async(req,res)=>{
    if(!ref&&code){const result=await client.query('SELECT id,phone FROM members WHERE code=$1',[String(code).trim().toUpperCase()]);const member=result.rows[0];if(member&&member.phone!==ph)ref=member.id;}
    first=!previous.rows[0].has_previous&&!!ref;
    const prices=await pricing(client),nn=nights(arrival,departure),total=stayPrice(arrival,departure,guests,prices,first),bid=id(),status=occupied.rowCount?'waitlist':'request';
-   await client.query('INSERT INTO bookings(id,name,phone,arrival,departure,guests,nights,total,referrer,status,request_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[bid,name,ph,arrival,departure,guests,nn,total,ref,status,key]);
+   const created=await client.query('INSERT INTO bookings(id,name,phone,arrival,departure,guests,nights,total,referrer,status,request_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,name,phone,arrival::text,departure::text,guests,total,status',[bid,name,ph,arrival,departure,guests,nn,total,ref,status,key]);
    await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bid,{type:'booking',id:bid,name,phone:ph,arrival,departure,guests,total,status}]);
-   return{id:bid,status,total};
+   return created.rows[0];
   });
  }catch(error){
   bookingAttempt?.rollback?.();
   throw error;
  }
  sendPending().catch(error=>console.error('Telegram outbox delivery failed',error.code||error.name));
- res.status(201).json({...booking,availability:booking.status==='waitlist'?'waitlist':'request'});
- if(isMailConfigured())scheduleBookingEmail(booking,{sendBooking:mailNotifications.sendBooking});
+ completeBookingSubmission(booking,{
+  respond:result=>res.status(201).json(result),
+  notify:created=>{if(isMailConfigured())scheduleBookingEmail(created,{sendBooking:mailNotifications.sendBooking});}
+ });
 });
 
 app.post('/api/admin/login',(req,res)=>{

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
  BOOKING_EMAIL_SUBJECT,
+ completeBookingSubmission,
  createBookingEmail,
  createMailNotificationService,
  isMailConfigured,
@@ -110,4 +111,88 @@ test('booking notification is deferred and delivery failures never escape the re
  assert.equal(delivered,true);
  assert.deepEqual(logged,[['Booking email delivery failed','ETIMEDOUT']]);
  assert.equal(JSON.stringify(logged).includes(env.MAIL_APP_PASSWORD),false);
+});
+
+test('a persisted booking produces a complete email while the public response keeps its original shape',async()=>{
+ const savedBooking={
+  id:'booking-from-postgres',
+  name:'Мария Иванова',
+  phone:'79991112233',
+  arrival:'2026-12-03',
+  departure:'2026-12-06',
+  guests:5,
+  total:72500,
+  status:'waitlist'
+ };
+ let response;
+ let deferred;
+ let sentMessage;
+ const service=createMailNotificationService({
+  env,
+  createTransport:()=>({async sendMail(message){sentMessage=message;}})
+ });
+
+ completeBookingSubmission(savedBooking,{
+  respond:value=>{response={status:201,body:value};},
+  notify:created=>scheduleBookingEmail(created,{
+   sendBooking:service.sendBooking,
+   schedule:callback=>{deferred=callback;}
+  })
+ });
+
+ assert.deepEqual(response,{
+  status:201,
+  body:{
+   id:'booking-from-postgres',
+   status:'waitlist',
+   total:72500,
+   availability:'waitlist'
+  }
+ });
+ assert.equal(deferred instanceof Function,true);
+ assert.equal(sentMessage,undefined);
+ deferred();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(sentMessage.subject,BOOKING_EMAIL_SUBJECT);
+ assert.match(sentMessage.text,/Гость: Мария Иванова/);
+ assert.match(sentMessage.text,/Телефон: 79991112233/);
+ assert.ok(sentMessage.text.includes('Заезд: 3 декабря 2026 г.'));
+ assert.ok(sentMessage.text.includes('Выезд: 6 декабря 2026 г.'));
+ assert.match(sentMessage.text,/Количество гостей: 5/);
+ assert.match(sentMessage.text,/Стоимость: 72 500 ₽/);
+ assert.match(sentMessage.text,/Статус заявки: Лист ожидания/);
+});
+
+test('SMTP failure after booking persistence does not change the booking response',async()=>{
+ const savedBooking={
+  id:'booking-mail-failure',
+  name:'Пётр Петров',
+  phone:'79990001122',
+  arrival:'2026-12-03',
+  departure:'2026-12-04',
+  guests:2,
+  total:24000,
+  status:'request'
+ };
+ let response;
+ let deferred;
+ const errors=[];
+ const failedService=createMailNotificationService({
+  env,
+  createTransport:()=>({async sendMail(){throw Object.assign(new Error('SMTP offline'),{code:'ETIMEDOUT'});}})
+ });
+ completeBookingSubmission(savedBooking,{
+  respond:value=>{response=value;},
+  notify:created=>scheduleBookingEmail(created,{
+   sendBooking:failedService.sendBooking,
+   logger:{error:(...args)=>errors.push(args)},
+   schedule:callback=>{deferred=callback;}
+  })
+ });
+ assert.equal(response.id,savedBooking.id);
+ assert.equal(errors.length,0);
+ deferred();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(response.id,savedBooking.id);
+ assert.deepEqual(errors,[['Booking email delivery failed','ETIMEDOUT']]);
 });
