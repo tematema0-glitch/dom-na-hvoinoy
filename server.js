@@ -238,7 +238,7 @@ app.post('/api/bookings',async(req,res)=>{
    if(old.rowCount) throw Object.assign(new Error('Эта заявка уже отправлена'),{status:409});
    bookingAttempt=reserveBookingPhoneAttempt(ph);
    if(bookingAttempt.retryAfter)throw Object.assign(new Error('Слишком много заявок. Попробуйте немного позже.'),{status:429,retryAfter:bookingAttempt.retryAfter});
-   const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1`,[arrival,departure]);
+   const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 LIMIT 1`,[arrival,departure]);
    const previous=await client.query("SELECT EXISTS(SELECT 1 FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed')) AS has_previous,(SELECT referrer FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed') AND referrer IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS referrer",[ph]);
    let ref=previous.rows[0].referrer,first=false;
    if(!ref&&code){const result=await client.query('SELECT id,phone FROM members WHERE code=$1',[String(code).trim().toUpperCase()]);const member=result.rows[0];if(member&&member.phone!==ph)ref=member.id;}
