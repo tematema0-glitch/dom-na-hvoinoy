@@ -1,5 +1,6 @@
 import express from 'express';
 import { handlePricingAction } from './pricing-updates.js';
+import { saveBirthdayRecord, deleteBirthdayRecord } from './birthday-clients.js';
 import { applyAvailabilityChange } from './calendar-availability.js';
 import pg from 'pg';
 import { readFile } from 'fs/promises';
@@ -158,6 +159,41 @@ app.get('/api/admin/calendar-availability',async(req,res)=>{
   console.error('Unable to load admin availability',error.code||error.name);
   res.status(500).json({error:'Не удалось загрузить занятость календаря'});
  }
+});
+// Owner-only customer contact list; never exposed through /api/club or public pages.
+app.get('/api/admin/birthdays',async(req,res,next)=>{
+ if(!requireAdmin(req,res))return;
+ res.setHeader('Cache-Control','private, no-store');
+ try{
+  const records=await pool.query(
+   'SELECT id,name,phone,birth_date::text,invitation_consent,created_at,updated_at FROM client_birthdays ORDER BY name,phone'
+  );
+  res.json({clients:records.rows});
+ }catch(error){next(error);}
+});
+app.post('/api/admin/birthdays',async(req,res,next)=>{
+ if(!requireAdmin(req,res))return;
+ res.setHeader('Cache-Control','private, no-store');
+ if(req.get('X-Requested-With')!=='XMLHttpRequest'||!req.is('application/json'))
+  return res.status(403).json({error:'Запрос запрещён.'});
+ const origin=req.get('Origin');
+ if(origin){
+  try{
+   if(new URL(origin).host!==req.get('host'))return res.status(403).json({error:'Недопустимый источник запроса.'});
+  }catch{return res.status(403).json({error:'Недопустимый источник запроса.'});}
+ }
+ try{
+  const body=req.body||{};
+  if(body.action==='save'){
+   const record=await saveBirthdayRecord(pool,body,phone,id);
+   return res.json({ok:true,client:record});
+  }
+  if(body.action==='delete'){
+   const record=await deleteBirthdayRecord(pool,body.id);
+   return res.json({ok:true,id:record.id});
+  }
+  res.status(400).json({error:'Неизвестное действие.'});
+ }catch(error){next(error);}
 });
 app.get('/api/pricing', async(req,res)=>res.json(await pricing()));
 app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false ORDER BY arrival`); res.json({ranges:q.rows}); });
@@ -471,7 +507,7 @@ app.get('/',async(req,res,next)=>{try{
  html=html.replace(/<\/head>/i,`${seoTags}</head>`);
  const styles=['<link rel="stylesheet" href="/booking-payment-info.css">'].filter(style=>!html.includes(style)).join('');
  if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
- const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/admin-birthdays.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
  res.setHeader('Cache-Control','no-store');
  res.type('html').send(html);

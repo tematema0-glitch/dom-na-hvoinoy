@@ -99,3 +99,15 @@ CREATE TABLE IF NOT EXISTS telegram_links (
   expires_at timestamptz NOT NULL,
   used_at timestamptz
 );
+
+-- Separate opt-in guest directory. No relation to the referral program or booking history.
+-- This table contains private contact and birth-date data; endpoints require owner login.
+CREATE TABLE IF NOT EXISTS client_birthdays (
+  id text PRIMARY KEY,
+  name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 80),
+  phone text NOT NULL UNIQUE CHECK (phone ~ '^7[0-9]{10}$'),
+  birth_date date NOT NULL CHECK (birth_date >= DATE '1900-01-01'),
+  invitation_consent boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
