@@ -1,5 +1,6 @@
 import express from 'express';
 import { handlePricingAction } from './pricing-updates.js';
+import { applyAvailabilityChange } from './calendar-availability.js';
 import pg from 'pg';
 import { readFile } from 'fs/promises';
 import crypto from 'crypto';
@@ -143,6 +144,21 @@ app.get('/api/me',async(req,res)=>{
  res.json(await memberAccount(member.rows[0]));
 });
 
+app.get('/api/admin/calendar-availability',async(req,res)=>{
+ if(!requireAdmin(req,res))return;
+ try{
+  const [blocks,bookings,rewards]=await Promise.all([
+   pool.query("SELECT id,arrival::text,departure::text,kind,note FROM calendar_blocks ORDER BY arrival,id"),
+   pool.query("SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND dates_released=false AND status IN ('confirmed','completed')"),
+   pool.query("SELECT date::text FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL")
+  ]);
+  res.setHeader('Cache-Control','no-store');
+  res.json({blocks:blocks.rows,bookings:bookings.rows,rewards:rewards.rows});
+ }catch(error){
+  console.error('Unable to load admin availability',error.code||error.name);
+  res.status(500).json({error:'Не удалось загрузить занятость календаря'});
+ }
+});
 app.get('/api/pricing', async(req,res)=>res.json(await pricing()));
 app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false ORDER BY arrival`); res.json({ranges:q.rows}); });
 
@@ -263,6 +279,14 @@ async function createReward(x,ownerCreated=false){
 
 app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const x=req.body||{};let statusNotificationQueued=false; try{ switch(x.action){
  case 'blockDates': {if(!validRange(x.arrival,x.departure)||!['blocked','booked'].includes(x.kind||'blocked'))return res.status(400).json({error:'Проверьте период блокировки'});await transaction(async client=>{await lockBookingDates(client);const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[x.arrival,x.departure]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});await client.query('INSERT INTO calendar_blocks(id,arrival,departure,kind,note) VALUES($1,$2,$3,$4,$5)',[id(),x.arrival,x.departure,x.kind||'blocked',String(x.note||'').slice(0,500)]);});break;}
+ case 'changeAvailabilityRange': {
+  let updated;
+  await transaction(async client=>{
+   await lockBookingDates(client);
+   updated=await applyAvailabilityChange(client,x,id);
+  });
+  return res.json({ok:true,...updated});
+ }
  case 'removeBlock': await pool.query('DELETE FROM calendar_blocks WHERE id=$1',[x.id]);break;
  case 'setPrices':
  case 'setDatePrice':
@@ -447,7 +471,7 @@ app.get('/',async(req,res,next)=>{try{
  html=html.replace(/<\/head>/i,`${seoTags}</head>`);
  const styles=['<link rel="stylesheet" href="/booking-payment-info.css">'].filter(style=>!html.includes(style)).join('');
  if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
- const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
  res.setHeader('Cache-Control','no-store');
  res.type('html').send(html);
