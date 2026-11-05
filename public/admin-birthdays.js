@@ -220,7 +220,8 @@ function createBirthdayModule(section){
   setScanStatus('Подготавливаем фотографию…');
   try{
    const extracted=await recognizeRussianPassport(selected,progress=>setScanStatus(progress),{rotation:Number(scanRotation.value)});
-   // Never save automatically. Phone and consent flags remain untouched.
+   // Never save automatically. Do not leave stale OCR results in either field.
+   // Keep manually entered values untouched when OCR cannot verify a field.
    if(extracted.fullName)name.input.value=extracted.fullName;
    if(extracted.birthDate)birthday.input.value=extracted.birthDate;
    const recognized=[];
@@ -234,7 +235,7 @@ function createBirthdayModule(section){
        'OCR не обнаружил читаемый текст. Сними страницу крупнее при хорошем освещении или поверни фото.\n':
        'Движок прочитал '+extracted.recognizedCharacters+' символов (оценка качества '+extracted.confidence+'%).\n')+
     'Проверь данные по оригиналу. Нажми «Сохранить» только после проверки.',
-    recognized.length?'success':'error'
+    (extracted.fullName&&extracted.birthDate)?'success':'error'
    );
   }catch(error){
    setScanStatus(error?.message||'Не удалось распознать фотографию. Заполни поля вручную.','error');

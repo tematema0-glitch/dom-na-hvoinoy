@@ -203,21 +203,26 @@ function identityFromRegion(text,today=ekaterinburgToday()){
  return {fullName,birthDate,warnings:[]};
 }
 
-function mergePasses(first,second){
- if(!second)return first;
- const warnings=[];
- const fullName=first.fullName||second.fullName;
- const birthDate=first.birthDate||second.birthDate;
- if(first.fullName&&second.fullName&&first.fullName!==second.fullName)
-  warnings.push('Два способа чтения дали разные ФИО. Сверьте результат с документом.');
- if(first.birthDate&&second.birthDate&&first.birthDate!==second.birthDate)
-  warnings.push('Два способа чтения дали разные даты рождения. Проверьте дату вручную.');
+// OCR can invent plausible dates from document numbers. A field is accepted
+// only when two separate recognition passes agree on the same value.
+export function verifyPassportReadings(readings){
+ const values=key=>readings.map(r=>r?.[key]).filter(Boolean);
+ const confirm=key=>{
+  const items=values(key);
+  if(items.length<2)return '';
+  const counts=new Map();
+  for(const item of items)counts.set(item,(counts.get(item)||0)+1);
+  const winners=[...counts].filter(([,count])=>count>=2);
+  return winners.length===1&&winners[0][1]>items.length/2?winners[0][0]:'';
+ };
+ const fullName=confirm('fullName');
+ const birthDate=confirm('birthDate');
  return {
   fullName,birthDate,
-  warnings:[...new Set([...first.warnings,...second.warnings,...warnings])].filter(w=>
-    !(fullName&&w.includes('фамилию и имя'))&&
-    !(birthDate&&w==='Дата рождения не распознана.')&&
-    !(second.fullName&&second.fullName.trim().split(/\s+/).length>=3&&w.includes('Отчество не распознано')))
+  warnings:[
+   ...(!fullName?['ФИО не подтверждено двумя независимыми чтениями. Введи вручную.']:[]),
+   ...(!birthDate?['Дата рождения не подтверждена. Введи вручную по паспорту.']:[])
+  ]
  };
 }
 
@@ -250,50 +255,40 @@ export async function recognizeRussianPassport(file,onProgress=()=>{},options={}
   notify('Читаем ФИО и дату рождения…');
   const firstResult=await worker.recognize(workingCanvas);
   const firstText=firstResult?.data?.text||'';
-  const first=extractPassportIdentity(firstText);
-  let second=null,secondText='',secondConfidence=0;
-  if(!first.fullName||!first.birthDate){
-   notify('Первая попытка не нашла все поля. Проверяем вторым способом…');
+  const readings=[extractPassportIdentity(firstText)];
+  let recognizedCharacters=firstText.trim().length;
+  let highestConfidence=Number(firstResult?.data?.confidence)||0;
+  // Second full-page reading uses sparse-text segmentation.
+  notify('Повторно проверяем распознанные поля…');
+  try{
+   await worker.setParameters({tessedit_pageseg_mode:'11'});
+   const result=await worker.recognize(workingCanvas);
+   const text=result?.data?.text||'';
+   recognizedCharacters=Math.max(recognizedCharacters,text.trim().length);
+   highestConfidence=Math.max(highestConfidence,Number(result?.data?.confidence)||0);
+   readings.push(extractPassportIdentity(text));
+  }catch{/* Never treat a single reading as verified. */}
+  // Independently inspect the lower-right block; never guess a date from
+  // any arbitrary number or choose the first three words as a person's name.
+  notify('Сверяем ФИО и дату рождения в увеличенной области…');
+  for(let variant=0;variant<2;variant++){
+   let crop=null;
    try{
-    await worker.setParameters({tessedit_pageseg_mode:'11'});
-    const secondResult=await worker.recognize(workingCanvas,{rotateAuto:true});
-    secondText=secondResult?.data?.text||'';
-    secondConfidence=Number(secondResult?.data?.confidence)||0;
-    second=extractPassportIdentity(secondText);
-   }catch{
-    // A second recognition method is optional: preserve the first result.
-    notify('Дополнительное распознавание недоступно. Проверяем первый результат…');
-   }
+    crop=identityCrop(workingCanvas,variant);
+    await worker.setParameters({tessedit_pageseg_mode:'6'});
+    const result=await worker.recognize(crop);
+    const text=result?.data?.text||'';
+    recognizedCharacters=Math.max(recognizedCharacters,text.trim().length);
+    highestConfidence=Math.max(highestConfidence,Number(result?.data?.confidence)||0);
+    // Labeled fields only. Positional guesses are deliberately disallowed.
+    readings.push(extractPassportIdentity(text));
+   }catch{/* Keep manual entry available. */}
+   finally{if(crop){crop.width=0;crop.height=0;}}
   }
-  let parsed=mergePasses(first,second);
-  let regionCharacters=0;
-  if(!parsed.fullName||!parsed.birthDate){
-   notify('Читаем крупным планом область с ФИО и датой рождения…');
-   for(let variant=0;variant<2;variant++){
-    let crop=null;
-    try{
-     crop=identityCrop(workingCanvas,variant);
-     await worker.setParameters({tessedit_pageseg_mode:'6'});
-     const regional=await worker.recognize(crop);
-     const text=regional?.data?.text||'';
-     regionCharacters=Math.max(regionCharacters,text.trim().length);
-     const byLabels=extractPassportIdentity(text);
-     const byPosition=identityFromRegion(text);
-     const candidate={
-      fullName:byLabels.fullName||byPosition.fullName,
-      birthDate:byLabels.birthDate||byPosition.birthDate,
-      warnings:[]
-     };
-     parsed=mergePasses(parsed,candidate);
-     if(parsed.fullName&&parsed.birthDate)break;
-    }catch{/* optional regional pass must never break manual entry */}
-    finally{if(crop){crop.width=0;crop.height=0;}}
-   }
-  }
-  const recognizedCharacters=Math.max(firstText.trim().length,secondText.trim().length,regionCharacters);
+  const parsed=verifyPassportReadings(readings);
   return {
    ...parsed,
-   confidence:Math.max(0,Math.min(100,Math.round(Math.max(Number(firstResult?.data?.confidence)||0,secondConfidence)))),
+   confidence:Math.max(0,Math.min(100,Math.round(highestConfidence))),
    recognizedCharacters
   };
  }catch(error){
