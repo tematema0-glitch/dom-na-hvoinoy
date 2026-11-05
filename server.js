@@ -461,10 +461,32 @@ app.get('/',async(req,res,next)=>{try{
  if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
  const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
+ res.setHeader('Cache-Control','no-store');
  res.type('html').send(html);
 }catch(error){next(error);}});
-app.use(express.static(path.join(__dirname,'public'),{extensions:['html']}));
-app.use((req,res)=>{if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});res.sendFile(path.join(__dirname,'public','index.html'));});
+const publicDir=path.join(__dirname,'public');
+app.use('/_next/static',express.static(path.join(publicDir,'_next','static'),{
+ maxAge:'30d',
+ immutable:true,
+ index:false
+}));
+app.use(express.static(publicDir,{
+ extensions:['html'],
+ setHeaders(res,filePath){
+  if(/\.(?:avif|gif|ico|jpe?g|png|svg|webp)$/i.test(filePath)){
+   res.setHeader('Cache-Control','public, max-age=3600');
+  }
+ }
+}));
+app.use((req,res)=>{
+ if(/^\/(api|admin-api)(\/|$)/.test(req.path))return res.status(404).json({error:'Not found'});
+ if(req.path.startsWith('/_next/static/')||req.path.startsWith('/cdn-cgi/')||/\.[a-z0-9]{2,8}$/i.test(req.path)){
+  console.warn('Static asset not found:',req.path);
+  return res.status(404).set('Cache-Control','no-store').type('text/plain').send('Not found');
+ }
+ res.setHeader('Cache-Control','no-store');
+ res.sendFile(path.join(publicDir,'index.html'));
+});
 async function startServer(){
  if(pool){
   const schema=await readFile(path.join(__dirname,'schema.sql'),'utf8');
