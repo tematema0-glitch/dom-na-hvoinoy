@@ -1,4 +1,5 @@
 import { ekaterinburgToday, sortBirthdayClients, birthdayHint } from './birthday-utils.js';
+import { recognizeRussianPassport } from './passport-ocr.js';
 
 const MODULE_CLASS='birthday-clients-module';
 const STYLE_ID='birthday-clients-style';
@@ -60,19 +61,43 @@ function createBirthdayModule(section){
  const save=node('button','birthday-save','Сохранить');save.type='submit';
  const cancel=node('button','birthday-cancel','Отмена');cancel.type='button';
  formActions.append(save,cancel);
- form.append(formTitle,formGrid,consentLabel,formActions);
+ const scanBox=node('section','birthday-scan-box');
+ scanBox.setAttribute('aria-label','Распознать паспорт');
+ const scanHeader=node('strong','birthday-scan-heading','Заполнить по фото паспорта');
+ const scanDescription=node('p','birthday-scan-note',
+  'Выбери фотографию страницы с ФИО и датой рождения. Распознавание выполняется на этом устройстве; фото не загружается на сервер сайта. После распознавания обязательно проверь поля.');
+ const scanPermissionLabel=node('label','birthday-consent birthday-scan-permission');
+ const scanPermission=node('input');scanPermission.type='checkbox';
+ scanPermissionLabel.append(scanPermission,node('span','',
+  'Подтверждаю, что владелец паспорта разрешил использовать его фото для заполнения карточки.'));
+ const scanInputLabel=node('label','birthday-input-field','Фото паспорта');
+ const scanInput=node('input','birthday-scan-file');
+ scanInput.type='file';scanInput.accept='image/jpeg,image/png,image/webp,image/heic,image/heif';
+ scanInput.setAttribute('aria-label','Выбрать фото паспортной страницы');
+ scanInputLabel.append(scanInput);
+ const scanButton=node('button','birthday-scan-button','Распознать фото');
+ scanButton.type='button';
+ const scanStatus=node('p','birthday-scan-status');
+ scanStatus.setAttribute('role','status');
+ scanStatus.setAttribute('aria-live','polite');
+ scanBox.append(scanHeader,scanDescription,scanPermissionLabel,scanInputLabel,scanButton,scanStatus);
+ form.append(formTitle,formGrid,scanBox,consentLabel,formActions);
  const message=node('p','birthday-message');message.setAttribute('role','status');message.setAttribute('aria-live','polite');
  const list=node('div','birthday-list');
  root.append(heading,about,form,toolbar,message,list);
  section.append(root);
 
- let clients=[],editId=null,busy=false,initialized=false;
+ let clients=[],editId=null,busy=false,scanning=false,initialized=false;
+ function setScanStatus(message,kind='info'){
+  scanStatus.textContent=message;
+  scanStatus.setAttribute('data-kind',kind);
+ }
  function notify(text,kind='info'){
   message.textContent=text;
   message.setAttribute('data-kind',kind);
  }
  function resetEditor(){
-  editId=null;form.reset();form.hidden=true;
+  editId=null;form.reset();scanInput.value='';setScanStatus('');form.hidden=true;
   save.textContent='Сохранить';formTitle.textContent='Новый клиент';
  }
  function edit(client=null){
@@ -84,6 +109,7 @@ function createBirthdayModule(section){
   formTitle.textContent=editId?'Редактировать клиента':'Новый клиент';
   save.textContent=editId?'Сохранить изменения':'Добавить клиента';
   notify('');
+  scanInput.value='';scanPermission.checked=false;setScanStatus('');
   name.input.focus();
  }
  function cardFor(client){
@@ -171,9 +197,50 @@ function createBirthdayModule(section){
   }catch(error){notify(error.message,'error');}
   finally{busy=false;}
  }
+ scanButton.addEventListener('click',async()=>{
+  if(scanning||busy)return;
+  const selected=scanInput.files?.[0];
+  if(!selected){setScanStatus('Сначала выбери фотографию паспорта.','error');return;}
+  if(!scanPermission.checked){
+   setScanStatus('Сначала подтверди разрешение владельца паспорта.','error');
+   return;
+  }
+  scanning=true;
+  scanButton.disabled=true;
+  scanInput.disabled=true;
+  save.disabled=true;
+  scanButton.textContent='Распознаём…';
+  setScanStatus('Подготавливаем фотографию…');
+  try{
+   const extracted=await recognizeRussianPassport(selected,progress=>setScanStatus(progress));
+   // Never save automatically. Phone and consent flags remain untouched.
+   if(extracted.fullName)name.input.value=extracted.fullName;
+   if(extracted.birthDate)birthday.input.value=extracted.birthDate;
+   const recognized=[];
+   if(extracted.fullName)recognized.push('ФИО: '+extracted.fullName);
+   if(extracted.birthDate)recognized.push('Дата рождения: '+extracted.birthDate);
+   const warnings=extracted.warnings||[];
+   setScanStatus(
+    (recognized.length?recognized.join('\n')+'\n':'Нужные поля не распознаны.\n')+
+    (warnings.length?warnings.join('\n')+'\n':'')+
+    'Проверь данные по оригиналу. Нажми «Сохранить» только после проверки.',
+    recognized.length?'success':'error'
+   );
+  }catch(error){
+   setScanStatus(error?.message||'Не удалось распознать фотографию. Заполни поля вручную.','error');
+  }finally{
+   // Drop the browser's reference to the selected document image.
+   scanInput.value='';
+   scanning=false;
+   scanButton.disabled=false;
+   scanInput.disabled=false;
+   save.disabled=busy;
+   scanButton.textContent='Распознать фото';
+  }
+ });
  form.addEventListener('submit',async event=>{
-  event.preventDefault();if(busy)return;
-  busy=true;save.disabled=true;cancel.disabled=true;notify('Сохраняем данные…');
+  event.preventDefault();if(busy||scanning)return;
+  busy=true;save.disabled=true;cancel.disabled=true;scanButton.disabled=true;notify('Сохраняем данные…');
   try{
    const payload={action:'save',name:name.input.value,phone:phone.input.value,
      birth_date:birthday.input.value,invitation_consent:consent.checked};
@@ -183,7 +250,7 @@ function createBirthdayModule(section){
    await load();
    notify('Клиент сохранён.','success');
   }catch(error){notify(error.message||'Ошибка сохранения.','error');}
-  finally{busy=false;save.disabled=false;cancel.disabled=false;}
+  finally{busy=false;save.disabled=false;cancel.disabled=false;scanButton.disabled=false;}
  });
  add.addEventListener('click',()=>edit());
  cancel.addEventListener('click',resetEditor);

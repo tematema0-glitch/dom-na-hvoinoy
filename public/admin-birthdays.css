@@ -39,3 +39,39 @@
 .birthday-clients-module .birthday-empty{border:1px dashed #666a73;background:#272a2f;border-radius:14px;padding:22px 15px;color:#e5e5e5;text-align:center;line-height:1.6}
 @media(max-width:850px){.birthday-clients-module .birthday-client-card{grid-template-columns:repeat(2,minmax(0,1fr))}.birthday-clients-module .birthday-actions{grid-column:1/-1;justify-content:flex-start}.birthday-clients-module .birthday-form-grid{grid-template-columns:1fr}}
 @media(max-width:480px){.birthday-clients-module{padding:17px 13px;margin-top:24px;border-radius:18px}.birthday-clients-module .birthday-client-card{gap:9px;padding:13px 11px}.birthday-clients-module .birthday-phone{white-space:normal}.birthday-clients-module .birthday-actions button,.birthday-clients-module .birthday-actions a{flex:1 1 auto}}
+
+/* Private, opt-in passport OCR. The file stays in the browser until the user
+   confirms the recognized fields with the normal save action. */
+.birthday-clients-module .birthday-scan-box{
+  display:grid;gap:12px;padding:16px;border:1px solid #939fa34a;
+  border-radius:15px;background:#202329;min-width:0;
+}
+.birthday-clients-module .birthday-scan-heading{
+  display:block;font-size:16px;color:#e4ff79;font-weight:750;
+}
+.birthday-clients-module .birthday-scan-note{
+  font-size:13px;line-height:1.55;color:#d9dcdf;margin:0;
+}
+.birthday-clients-module .birthday-scan-permission{margin:0}
+.birthday-clients-module .birthday-scan-file{
+  min-height:48px;display:block;cursor:pointer;padding:10px 7px!important;
+  color:#111;font-size:14px!important;
+}
+.birthday-clients-module .birthday-scan-button{
+  justify-self:start;min-height:44px;background:#e4ff6b;color:#1a1a1a;
+  padding:10px 18px;border:0;border-radius:12px;font-weight:750;
+  cursor:pointer;font-size:15px;
+}
+.birthday-clients-module .birthday-scan-button:disabled{
+  cursor:wait;opacity:.65;
+}
+.birthday-clients-module .birthday-scan-status{
+  font-size:13px;line-height:1.5;white-space:pre-line;margin:0;
+  color:#d8dfe3;min-height:16px;overflow-wrap:anywhere;
+}
+.birthday-clients-module .birthday-scan-status[data-kind="error"]{color:#ffd0c8}
+.birthday-clients-module .birthday-scan-status[data-kind="success"]{color:#d9ff9f}
+@media(max-width:480px){
+ .birthday-clients-module .birthday-scan-box{padding:13px}
+ .birthday-clients-module .birthday-scan-button{width:100%;justify-self:stretch}
+}
