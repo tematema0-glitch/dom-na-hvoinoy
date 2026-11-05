@@ -231,8 +231,8 @@ function createBirthdayModule(section){
     (recognized.length?recognized.join('\n')+'\n':'Нужные поля не распознаны.\n')+
     (warnings.length?warnings.join('\n')+'\n':'')+
     (extracted.recognizedCharacters===0?
-       'OCR не обнаружил читаемый текст. Сними страницу крупнее при хорошем освещении или поверни фото.\\n':
-       'Движок прочитал '+extracted.recognizedCharacters+' символов (оценка качества '+extracted.confidence+'%).\\n')+
+       'OCR не обнаружил читаемый текст. Сними страницу крупнее при хорошем освещении или поверни фото.\n':
+       'Движок прочитал '+extracted.recognizedCharacters+' символов (оценка качества '+extracted.confidence+'%).\n')+
     'Проверь данные по оригиналу. Нажми «Сохранить» только после проверки.',
     recognized.length?'success':'error'
    );

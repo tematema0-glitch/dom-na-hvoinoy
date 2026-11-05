@@ -149,6 +149,60 @@ function rotateCanvas(source,angle){
  return rotated;
 }
 
+// In a Russian passport the field captions are small and printed to the left
+// of the values. OCR on the entire photograph commonly loses those captions.
+// A separate read of the lower-right identity block is therefore essential.
+function identityCrop(source,variant=0){
+ const portrait=source.height>source.width;
+ const rect=portrait?
+  (variant===0?[.43,.43,.55,.35]:[.48,.47,.49,.25]):
+  (variant===0?[.39,.40,.59,.44]:[.44,.44,.54,.34]);
+ const canvas=document.createElement('canvas');
+ const sw=Math.max(1,Math.round(source.width*rect[2]));
+ const sh=Math.max(1,Math.round(source.height*rect[3]));
+ canvas.width=Math.min(3000,sw*2);
+ canvas.height=Math.min(2200,sh*2);
+ const ctx=canvas.getContext('2d',{alpha:false});
+ if(!ctx)throw new Error('Не удалось подготовить область ФИО.');
+ ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+ ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+ ctx.drawImage(source,Math.round(source.width*rect[0]),Math.round(source.height*rect[1]),sw,sh,0,0,canvas.width,canvas.height);
+ return canvas;
+}
+const BLOCKED_NAME_WORDS=new Set([
+ 'РОССИЯ','РОССИЙСКАЯ','ФЕДЕРАЦИЯ','ОБЛАСТЬ','СВЕРДЛОВСКАЯ',
+ 'ФАМИЛИЯ','ИМЯ','ОТЧЕСТВО','РОЖДЕНИЯ','ДАТА','МЕСТО','ПОЛ',
+ 'ЖЕН','МУЖ','ЖЕНСКИЙ','МУЖСКОЙ','ГОРОД','ГОР','ЕКАТЕРИНБУРГ',
+ 'РОССИИ','МВД','КОД','ПОДРАЗДЕЛЕНИЯ','ВЫДАН','ГУ','РФ','РУС'
+]);
+function identityFromRegion(text,today=ekaterinburgToday()){
+ const lines=normalizePassportLines(text);
+ const candidates=[];
+ for(const line of lines){
+  // Avoid selecting a random date as a name; the identity zone contains
+  // three adjacent uppercase Cyrillic values, usually on separate lines.
+  const words=(line.toLocaleUpperCase('ru-RU').match(/[А-ЯЁ]{3,32}(?:-[А-ЯЁ]{3,32})?/gu)||[])
+   .filter(w=>!BLOCKED_NAME_WORDS.has(w));
+  if(words.length===1&&line.replace(/[^А-ЯЁа-яё]/g,'').length<=words[0].length+3)
+   candidates.push(words[0]);
+  else if(words.length>=2&&words.length<=3&&
+    words.join('').length>=line.replace(/[^А-ЯЁа-яё]/g,'').length-3)
+   candidates.push(...words);
+ }
+ const unique=candidates.filter((word,i)=>i===0||word!==candidates[i-1]);
+ let fullName='';
+ if(unique.length>=3&&unique.length<=7){
+  // Last name, first name, patronymic must occur in sequence. If the
+  // region is noisy, don't invent a name; the user can correct manually.
+  const group=unique.slice(0,3);
+  if(group.every(w=>w.length>=3)&&group[0]!==group[1]){
+   fullName=group.map(w=>w.toLocaleLowerCase('ru-RU').replace(/(^|-)[а-яё]/gu,x=>x.toLocaleUpperCase('ru-RU'))).join(' ');
+  }
+ }
+ const birthDate=detectDate(lines.join(' '),today);
+ return {fullName,birthDate,warnings:[]};
+}
+
 function mergePasses(first,second){
  if(!second)return first;
  const warnings=[];
@@ -211,8 +265,32 @@ export async function recognizeRussianPassport(file,onProgress=()=>{},options={}
     notify('Дополнительное распознавание недоступно. Проверяем первый результат…');
    }
   }
-  const parsed=mergePasses(first,second);
-  const recognizedCharacters=Math.max(firstText.trim().length,secondText.trim().length);
+  let parsed=mergePasses(first,second);
+  let regionCharacters=0;
+  if(!parsed.fullName||!parsed.birthDate){
+   notify('Читаем крупным планом область с ФИО и датой рождения…');
+   for(let variant=0;variant<2;variant++){
+    let crop=null;
+    try{
+     crop=identityCrop(workingCanvas,variant);
+     await worker.setParameters({tessedit_pageseg_mode:'6'});
+     const regional=await worker.recognize(crop);
+     const text=regional?.data?.text||'';
+     regionCharacters=Math.max(regionCharacters,text.trim().length);
+     const byLabels=extractPassportIdentity(text);
+     const byPosition=identityFromRegion(text);
+     const candidate={
+      fullName:byLabels.fullName||byPosition.fullName,
+      birthDate:byLabels.birthDate||byPosition.birthDate,
+      warnings:[]
+     };
+     parsed=mergePasses(parsed,candidate);
+     if(parsed.fullName&&parsed.birthDate)break;
+    }catch{/* optional regional pass must never break manual entry */}
+    finally{if(crop){crop.width=0;crop.height=0;}}
+   }
+  }
+  const recognizedCharacters=Math.max(firstText.trim().length,secondText.trim().length,regionCharacters);
   return {
    ...parsed,
    confidence:Math.max(0,Math.min(100,Math.round(Math.max(Number(firstResult?.data?.confidence)||0,secondConfidence)))),
