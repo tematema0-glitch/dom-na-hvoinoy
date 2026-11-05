@@ -133,14 +133,54 @@ async function decodeImage(file){
  }
 }
 
-export async function recognizeRussianPassport(file,onProgress=()=>{}){
- const notify=(message)=>{if(typeof onProgress==='function')onProgress(message);};
- notify('Готовим фотографию…');
- const canvas=await decodeImage(file);
- let worker;
+function rotateCanvas(source,angle){
+ if(angle===0)return source;
+ const rotated=document.createElement('canvas');
+ const quarterTurn=angle===90||angle===270;
+ rotated.width=quarterTurn?source.height:source.width;
+ rotated.height=quarterTurn?source.width:source.height;
+ const ctx=rotated.getContext('2d',{alpha:false});
+ if(!ctx)throw new Error('Не удалось повернуть фотографию.');
+ ctx.fillStyle='#fff';
+ ctx.fillRect(0,0,rotated.width,rotated.height);
+ ctx.translate(rotated.width/2,rotated.height/2);
+ ctx.rotate(angle*Math.PI/180);
+ ctx.drawImage(source,-source.width/2,-source.height/2);
+ return rotated;
+}
+
+function mergePasses(first,second){
+ if(!second)return first;
+ const warnings=[];
+ const fullName=first.fullName||second.fullName;
+ const birthDate=first.birthDate||second.birthDate;
+ if(first.fullName&&second.fullName&&first.fullName!==second.fullName)
+  warnings.push('Два способа чтения дали разные ФИО. Сверьте результат с документом.');
+ if(first.birthDate&&second.birthDate&&first.birthDate!==second.birthDate)
+  warnings.push('Два способа чтения дали разные даты рождения. Проверьте дату вручную.');
+ return {
+  fullName,birthDate,
+  warnings:[...new Set([...first.warnings,...second.warnings,...warnings])].filter(w=>
+    !(fullName&&w.includes('фамилию и имя'))&&
+    !(birthDate&&w==='Дата рождения не распознана.')&&
+    !(second.fullName&&second.fullName.trim().split(/\s+/).length>=3&&w.includes('Отчество не распознано')))
+ };
+}
+
+export async function recognizeRussianPassport(file,onProgress=()=>{},options={}){
+ const notify=message=>{if(typeof onProgress==='function')onProgress(message);};
+ const angle=Number(options.rotation||0);
+ if(![0,90,180,270].includes(angle))throw new Error('Недопустимый поворот изображения.');
+ notify('Подготавливаем фотографию…');
+ let originalCanvas,workingCanvas,worker,stage='photo';
  try{
-  notify('Загружаем русскую модель распознавания…');
+  originalCanvas=await decodeImage(file);
+  workingCanvas=rotateCanvas(originalCanvas,angle);
+  stage='library';
+  notify('Загружаем движок OCR…');
   const Tesseract=await loadOcrLibrary();
+  stage='model';
+  notify('Загружаем русскую модель распознавания…');
   worker=await Tesseract.createWorker('rus',1,{
    workerPath:WORKER_URL,
    corePath:CORE_URL,
@@ -152,16 +192,41 @@ export async function recognizeRussianPassport(file,onProgress=()=>{}){
     }
    }
   });
-  notify('Читаем данные паспорта…');
-  const result=await worker.recognize(canvas);
-  const parsed=extractPassportIdentity(result?.data?.text||'');
-  return { ...parsed, confidence: Math.max(0,Math.min(100,Math.round(Number(result?.data?.confidence)||0))) };
+  stage='recognition';
+  notify('Читаем ФИО и дату рождения…');
+  const firstResult=await worker.recognize(workingCanvas);
+  const firstText=firstResult?.data?.text||'';
+  const first=extractPassportIdentity(firstText);
+  let second=null,secondText='',secondConfidence=0;
+  if(!first.fullName||!first.birthDate){
+   notify('Первая попытка не нашла все поля. Проверяем вторым способом…');
+   try{
+    await worker.setParameters({tessedit_pageseg_mode:'11'});
+    const secondResult=await worker.recognize(workingCanvas,{rotateAuto:true});
+    secondText=secondResult?.data?.text||'';
+    secondConfidence=Number(secondResult?.data?.confidence)||0;
+    second=extractPassportIdentity(secondText);
+   }catch{
+    // A second recognition method is optional: preserve the first result.
+    notify('Дополнительное распознавание недоступно. Проверяем первый результат…');
+   }
+  }
+  const parsed=mergePasses(first,second);
+  const recognizedCharacters=Math.max(firstText.trim().length,secondText.trim().length);
+  return {
+   ...parsed,
+   confidence:Math.max(0,Math.min(100,Math.round(Math.max(Number(firstResult?.data?.confidence)||0,secondConfidence)))),
+   recognizedCharacters
+  };
  }catch(error){
-  // Never log OCR text or the original image.
-  if(error?.message?.startsWith('Выберите фотографию'))throw error;
-  throw new Error('Не удалось распознать фото. Проверьте интернет и качество снимка или заполните поля вручную.');
+  // Never log the selected passport image or the OCR text, even on failure.
+  if(stage==='library')throw new Error('Не удалось загрузить движок OCR. Проверь интернет или блокировщик рекламы.');
+  if(stage==='model')throw new Error('Не удалось запустить русскую модель OCR. Попробуй другую сеть или браузер.');
+  if(stage==='photo')throw error;
+  throw new Error('Движок OCR не смог обработать изображение. Попробуй JPEG, поворот или другое фото.');
  }finally{
-  canvas.width=0;canvas.height=0;
-  if(worker){try{await worker.terminate();}catch{/* cleanup best effort */}}
+  if(worker){try{await worker.terminate();}catch{/* best effort */}}
+  if(workingCanvas&&workingCanvas!==originalCanvas){workingCanvas.width=0;workingCanvas.height=0;}
+  if(originalCanvas){originalCanvas.width=0;originalCanvas.height=0;}
  }
 }

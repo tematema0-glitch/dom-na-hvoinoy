@@ -75,12 +75,19 @@ function createBirthdayModule(section){
  scanInput.type='file';scanInput.accept='image/jpeg,image/png,image/webp,image/heic,image/heif';
  scanInput.setAttribute('aria-label','Выбрать фото паспортной страницы');
  scanInputLabel.append(scanInput);
+ const scanRotationLabel=node('label','birthday-input-field birthday-scan-rotation');
+ scanRotationLabel.append(node('span','','Поворот фото (если текст расположен боком)'));
+ const scanRotation=node('select','birthday-scan-select');
+ for(const [angle,label] of [['0','Без поворота'],['90','Повернуть на 90°'],['180','Повернуть на 180°'],['270','Повернуть на 270°']]){
+  const option=node('option','',label);option.value=angle;scanRotation.append(option);
+ }
+ scanRotationLabel.append(scanRotation);
  const scanButton=node('button','birthday-scan-button','Распознать фото');
  scanButton.type='button';
  const scanStatus=node('p','birthday-scan-status');
  scanStatus.setAttribute('role','status');
  scanStatus.setAttribute('aria-live','polite');
- scanBox.append(scanHeader,scanDescription,scanPermissionLabel,scanInputLabel,scanButton,scanStatus);
+ scanBox.append(scanHeader,scanDescription,scanPermissionLabel,scanInputLabel,scanRotationLabel,scanButton,scanStatus);
  form.append(formTitle,formGrid,scanBox,consentLabel,formActions);
  const message=node('p','birthday-message');message.setAttribute('role','status');message.setAttribute('aria-live','polite');
  const list=node('div','birthday-list');
@@ -97,7 +104,7 @@ function createBirthdayModule(section){
   message.setAttribute('data-kind',kind);
  }
  function resetEditor(){
-  editId=null;form.reset();scanInput.value='';setScanStatus('');form.hidden=true;
+  editId=null;form.reset();scanInput.value='';scanRotation.value='0';setScanStatus('');form.hidden=true;
   save.textContent='Сохранить';formTitle.textContent='Новый клиент';
  }
  function edit(client=null){
@@ -109,7 +116,7 @@ function createBirthdayModule(section){
   formTitle.textContent=editId?'Редактировать клиента':'Новый клиент';
   save.textContent=editId?'Сохранить изменения':'Добавить клиента';
   notify('');
-  scanInput.value='';scanPermission.checked=false;setScanStatus('');
+  scanInput.value='';scanRotation.value='0';scanPermission.checked=false;setScanStatus('');
   name.input.focus();
  }
  function cardFor(client){
@@ -212,7 +219,7 @@ function createBirthdayModule(section){
   scanButton.textContent='Распознаём…';
   setScanStatus('Подготавливаем фотографию…');
   try{
-   const extracted=await recognizeRussianPassport(selected,progress=>setScanStatus(progress));
+   const extracted=await recognizeRussianPassport(selected,progress=>setScanStatus(progress),{rotation:Number(scanRotation.value)});
    // Never save automatically. Phone and consent flags remain untouched.
    if(extracted.fullName)name.input.value=extracted.fullName;
    if(extracted.birthDate)birthday.input.value=extracted.birthDate;
@@ -223,6 +230,9 @@ function createBirthdayModule(section){
    setScanStatus(
     (recognized.length?recognized.join('\n')+'\n':'Нужные поля не распознаны.\n')+
     (warnings.length?warnings.join('\n')+'\n':'')+
+    (extracted.recognizedCharacters===0?
+       'OCR не обнаружил читаемый текст. Сними страницу крупнее при хорошем освещении или поверни фото.\\n':
+       'Движок прочитал '+extracted.recognizedCharacters+' символов (оценка качества '+extracted.confidence+'%).\\n')+
     'Проверь данные по оригиналу. Нажми «Сохранить» только после проверки.',
     recognized.length?'success':'error'
    );
