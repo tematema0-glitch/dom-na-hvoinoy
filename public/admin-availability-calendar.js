@@ -102,6 +102,7 @@ function mountStyle(){
     '.owner-calendar .admin-calendar td[data-manual-calendar-block="1"] > button{outline:2px solid #d59c2f!important;outline-offset:-2px}',
     '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar button:is([data-selected-single="true"],[data-range-start="true"],[data-range-end="true"],[data-range-middle="true"]){background:transparent!important;box-shadow:none!important}',
     '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-selected]{background:transparent!important}',
+    '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-selected].occupied-day{background:#f5c7c5!important}',
     '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-availability-selected-night="1"] > button{background:#dbff00!important;color:#171717!important}',
     '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-availability-checkout="1"] > button{background:transparent!important;outline:2px dashed #596a75!important;outline-offset:-3px}',
     '.owner-calendar .admin-calendar td[data-protected-calendar-night="1"] > button{box-shadow:inset 0 0 0 2px #d66a6a!important}',
