@@ -1,8 +1,32 @@
 import { dateRangeInclusive, checkedNightlyPrice } from './date-price-range.js';
 
+const PRICE_DAY=/^\d{4}-\d{2}-\d{2}$/;
+const NIGHT_PRICE_FORMAT=new Intl.NumberFormat('ru-RU');
+
+export function calendarNightPrice(pricing,isoDate){
+  if(!pricing||!PRICE_DAY.test(isoDate))return null;
+  const date=new Date(isoDate+'T00:00:00Z');
+  if(!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==isoDate)return null;
+  const overrides=pricing.dates||{};
+  const special=Object.prototype.hasOwnProperty.call(overrides,isoDate);
+  const day=date.getUTCDay();
+  const raw=special?overrides[isoDate]:(day===5?pricing.friday:day===6?pricing.saturday:pricing.weekday);
+  const price=Number(raw);
+  return Number.isSafeInteger(price)&&price>=0?{price,special}:null;
+}
+export function formatCalendarNightPrice(price){
+  if(!Number.isSafeInteger(price)||price<0)return '';
+  if(price>=1000000)return NIGHT_PRICE_FORMAT.format(price/1000000)+' млн';
+  return NIGHT_PRICE_FORMAT.format(price).replace(/[\u00a0\u202f]/g,'\u202f');
+}
+
 const STYLE_ID='admin-price-calendar-css';
 const MODE_KEY='admin-price-calendar-mode';
 let saving=false;
+let calendarPricing=null;
+let pricingRequest=null;
+let lastPricingRequest=0;
+let lastPricingSuccess=0;
 function el(tag,className='',text=''){
   const e=document.createElement(tag);if(className)e.className=className;if(text)e.textContent=text;return e;
 }
@@ -18,6 +42,29 @@ function style(){
   if(document.getElementById(STYLE_ID))return;
   const css=el('style');css.id=STYLE_ID;
   css.textContent=`
+    /* Display live effective nightly rates within existing DayPicker day buttons.
+       Pseudo-elements do not modify React-owned DOM children or date selection. */
+    .owner-calendar .admin-calendar td[data-day] > button[data-admin-night-price]{
+      display:flex!important;flex-direction:column!important;align-items:center!important;
+      justify-content:center!important;gap:2px!important;padding:2px 0!important;
+      font-size:15px!important;line-height:1.05!important;min-height:var(--cell-size)!important;
+      width:100%;font-variant-numeric:tabular-nums;
+    }
+    .owner-calendar .admin-calendar button[data-admin-night-price]::after{
+      content:attr(data-admin-night-price);display:block;font-size:9px;font-weight:550;
+      line-height:1!important;letter-spacing:-.035em;white-space:nowrap;
+      opacity:.82;pointer-events:none;font-variant-numeric:tabular-nums;
+    }
+    .owner-calendar .admin-calendar button[data-admin-price-compact="1"]::after{font-size:8px;letter-spacing:-.06em}
+    .owner-calendar .admin-calendar button[data-admin-price-special="1"]::after{
+      font-weight:750;opacity:1;color:#235e81;
+    }
+    .owner-calendar .admin-calendar .occupied-day button[data-admin-price-special="1"]::after{color:#762925}
+    @media(max-width:700px){
+      .owner-calendar .admin-calendar td[data-day] > button[data-admin-night-price]{font-size:14px!important;gap:1px!important}
+      .owner-calendar .admin-calendar button[data-admin-night-price]::after{font-size:8.5px}
+      .owner-calendar .admin-calendar button[data-admin-price-compact="1"]::after{font-size:7.5px}
+    }
     .price-calendar-mode-buttons{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0}
     .price-calendar-mode-buttons button{min-height:44px;border:1px solid #858a8e;border-radius:12px;background:#303339;color:#fff;padding:10px 16px;cursor:pointer}
     .price-calendar-mode-buttons button[aria-pressed="true"]{background:#dbff00;color:#111;border-color:#dbff00;font-weight:700}
@@ -137,10 +184,64 @@ function hideLegacyPriceControls(){
     form.parentElement.classList.add('legacy-price-controls-hidden');
   }
 }
+function paintNightlyPrices(){
+  if(!calendarPricing)return;
+  // DayPicker puts the ISO date on each table cell, unlike its localized day button.
+  // Only update attributes, never the text/children managed by React.
+  document.querySelectorAll('.owner-calendar .calendar-grid .admin-calendar td[data-day]').forEach(cell=>{
+    const date=cell.getAttribute('data-day');
+    const button=cell.querySelector('button');
+    if(!button)return;
+    const effective=calendarNightPrice(calendarPricing,date);
+    if(!effective){
+      button.removeAttribute('data-admin-night-price');
+      button.removeAttribute('data-admin-price-special');
+      button.removeAttribute('data-admin-price-compact');
+      return;
+    }
+    const display=formatCalendarNightPrice(effective.price);
+    if(button.getAttribute('data-admin-night-price')!==display)button.setAttribute('data-admin-night-price',display);
+    const special=effective.special?'1':'0';
+    if(button.getAttribute('data-admin-price-special')!==special)button.setAttribute('data-admin-price-special',special);
+    const compact=display.length>6?'1':'0';
+    if(button.getAttribute('data-admin-price-compact')!==compact)button.setAttribute('data-admin-price-compact',compact);
+  });
+}
+function loadCalendarPricing(force=false){
+  if(!document.querySelector('.owner-calendar .calendar-grid .admin-calendar'))return;
+  if(pricingRequest)return;
+  if(!force&&calendarPricing){paintNightlyPrices();return;}
+  if(!force&&Date.now()-lastPricingRequest<15000)return;
+  lastPricingRequest=Date.now();
+  pricingRequest=fetch('/api/pricing',{credentials:'same-origin',cache:'no-store'})
+    .then(response=>{if(!response.ok)throw new Error('Pricing not available');return response.json();})
+    .then(data=>{
+      if(!data||!data.dates||!Number.isFinite(Number(data.weekday))||!Number.isFinite(Number(data.friday))||!Number.isFinite(Number(data.saturday)))throw new Error('Invalid pricing data');
+      calendarPricing=data;
+      lastPricingSuccess=Date.now();
+      paintNightlyPrices();
+    })
+    .catch(error=>{console.warn('Unable to display admin calendar prices:',error);})
+    .finally(()=>{pricingRequest=null;});
+}
 function mountAll(){
   hideLegacyPriceControls();
   document.querySelectorAll('.owner-calendar').forEach(mount);
+  if(document.querySelector('.owner-calendar .calendar-grid .admin-calendar')){
+    if(calendarPricing)paintNightlyPrices();
+    else loadCalendarPricing();
+  }
 }
+function refreshCalendarPricing(){
+  if(document.hidden||!document.querySelector('.owner-calendar .calendar-grid .admin-calendar'))return;
+  if(Date.now()-lastPricingSuccess>=30000)loadCalendarPricing(true);
+}
+if(typeof window!=='undefined'){
+  window.addEventListener('prices-updated',()=>loadCalendarPricing(true));
+  window.addEventListener('focus',refreshCalendarPricing);
+  document.addEventListener('visibilitychange',refreshCalendarPricing);
+}
+
 if(typeof document!=='undefined'){
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mountAll,{once:true});
   else mountAll();
