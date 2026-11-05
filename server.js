@@ -1,4 +1,5 @@
 import express from 'express';
+import { handlePricingAction } from './pricing-updates.js';
 import pg from 'pg';
 import { readFile } from 'fs/promises';
 import crypto from 'crypto';
@@ -263,25 +264,12 @@ async function createReward(x,ownerCreated=false){
 app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const x=req.body||{};let statusNotificationQueued=false; try{ switch(x.action){
  case 'blockDates': {if(!validRange(x.arrival,x.departure)||!['blocked','booked'].includes(x.kind||'blocked'))return res.status(400).json({error:'Проверьте период блокировки'});await transaction(async client=>{await lockBookingDates(client);const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[x.arrival,x.departure]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});await client.query('INSERT INTO calendar_blocks(id,arrival,departure,kind,note) VALUES($1,$2,$3,$4,$5)',[id(),x.arrival,x.departure,x.kind||'blocked',String(x.note||'').slice(0,500)]);});break;}
  case 'removeBlock': await pool.query('DELETE FROM calendar_blocks WHERE id=$1',[x.id]);break;
- case 'setPrices': {
-  const p=await pricing();
-  const weekday=Number(x.weekday),friday=Number(x.friday),saturday=Number(x.saturday);
-  if(!isValidPrice(weekday,1000000)||!isValidPrice(friday,1000000)||!isValidPrice(saturday,1000000))throw Object.assign(new Error('Некорректные цены'),{status:400});
-  p.weekday=weekday;p.friday=friday;p.saturday=saturday;
-  await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;
- }
- case 'setDatePrice': {
-  const p=await pricing();
-  if(!isDate(x.date)||!isValidPrice(x.price,1000000))throw Object.assign(new Error('Некорректная цена или дата'),{status:400});
-  p.dates={...(p.dates||{}),[x.date]:Number(x.price)};
-  await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;
- }
- case 'removeDatePrice': {
-  if(!isDate(x.date))throw Object.assign(new Error('Некорректная дата'),{status:400});
-  const p=await pricing();
-  delete p.dates?.[x.date];
-  await pool.query("INSERT INTO settings(key,value) VALUES('pricing',$1) ON CONFLICT(key) DO UPDATE SET value=$1",[p]);break;
- }
+ case 'setPrices':
+ case 'setDatePrice':
+ case 'removeDatePrice':
+ case 'setDatePricesRange':
+ case 'removeDatePricesRange':
+  await handlePricingAction(pool,x);break;
  case 'memberNote': await pool.query('UPDATE members SET note=$1 WHERE id=$2',[x.note||'',x.memberId]);break;
  case 'deductPoints': {const points=Number(x.points),requestId=String(x.requestId||'');if(!x.memberId||!Number.isInteger(points)||points<1||points>100000||!requestId||requestId.length>128)return res.status(400).json({error:'Проверьте сумму списания'});await transaction(async client=>{const old=await client.query('SELECT 1 FROM point_ledger WHERE request_id=$1',[requestId]);if(old.rowCount)return;const member=await client.query('SELECT id FROM members WHERE id=$1 FOR UPDATE',[x.memberId]);if(!member.rowCount)throw Object.assign(new Error('Участник не найден'),{status:400});const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN kind IN ('earned','release') THEN points ELSE -points END),0)::int AS points FROM point_ledger WHERE member_id=$1",[x.memberId]);if(balance.rows[0].points<points)throw Object.assign(new Error('Недостаточно баллов'),{status:400});await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id) VALUES($1,$2,'deducted',$3,$4) ON CONFLICT(request_id) DO NOTHING",[x.memberId,points,String(x.reason||'').slice(0,500),requestId]);});break;}
  case 'bookingStatus': {if(!['waitlist','request','confirmed','completed','cancelled'].includes(x.status))return res.status(400).json({error:'Некорректный статус'});await transaction(async client=>{const current=await client.query('SELECT * FROM bookings WHERE id=$1 AND archived=false FOR UPDATE',[x.id]);if(!current.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});const existing=current.rows[0];await lockBookingDates(client);if(x.status==='confirmed'){if(!['request','waitlist','confirmed'].includes(existing.status))throw Object.assign(new Error('Нельзя подтвердить бронь из текущего статуса'),{status:409});const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 LIMIT 1",[existing.arrival,existing.departure,existing.id]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});}if(x.status==='completed'){if(existing.status!=='confirmed')throw Object.assign(new Error('Завершить можно только подтверждённую бронь'),{status:409});if(x.paid!==true)throw Object.assign(new Error('Для завершения необходимо подтвердить оплату'),{status:409});if(Date.now()<Date.parse(`${existing.departure}T07:00:00Z`)&&x.acceptEarlyRisk!==true)throw Object.assign(new Error('Время выезда ещё не наступило'),{status:409});}const q=await client.query('UPDATE bookings SET status=$1,early_credited=CASE WHEN $1=\'completed\' AND $3 THEN true ELSE early_credited END WHERE id=$2 RETURNING *',[x.status,x.id,x.acceptEarlyRisk===true]);const bk=q.rows[0];if(existing.status!==x.status&&['confirmed','cancelled'].includes(x.status)){await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bk.id,{type:'booking-status',status:x.status,name:bk.name,phone:bk.phone,arrival:bk.arrival,departure:bk.departure,guests:bk.guests}]);statusNotificationQueued=true;}if(x.status==='completed'&&bk.referrer)await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,booking_id) VALUES($1,$2,'earned','Завершённое проживание',$3,$4) ON CONFLICT(request_id) DO NOTHING",[bk.referrer,bk.nights,'booking:'+bk.id,bk.id]);});break;}
@@ -459,7 +447,7 @@ app.get('/',async(req,res,next)=>{try{
  html=html.replace(/<\/head>/i,`${seoTags}</head>`);
  const styles=['<link rel="stylesheet" href="/booking-payment-info.css">'].filter(style=>!html.includes(style)).join('');
  if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
- const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/booking-payment-info.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
  res.setHeader('Cache-Control','no-store');
  res.type('html').send(html);
