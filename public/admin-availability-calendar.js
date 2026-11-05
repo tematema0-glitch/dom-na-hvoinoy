@@ -29,6 +29,27 @@ export function singleCalendarNightSelection(isoDate){
   const days=dateRange(isoDate,isoDate);
   return days?{from:days[0],to:days[0]}:null;
 }
+// Dates in the availability editor are check-in and check-out.
+// Only nights starting before check-out are occupied.
+export function calendarCheckoutNights(arrival,checkout){
+  if(typeof checkout!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(checkout))return null;
+  const time=Date.parse(checkout+'T00:00:00Z');
+  if(!Number.isFinite(time)||new Date(time).toISOString().slice(0,10)!==checkout)return null;
+  const last=new Date(time-86400000).toISOString().slice(0,10);
+  return dateRange(arrival,last);
+}
+function nextCheckout(date){
+  if(!singleCalendarNightSelection(date))return null;
+  return new Date(Date.parse(date+'T00:00:00Z')+86400000).toISOString().slice(0,10);
+}
+export function selectAvailabilityCalendarClick(previous,date){
+  const checkout=nextCheckout(date);
+  if(!checkout)return null;
+  if(previous&&!previous.complete&&date>previous.arrival&&calendarCheckoutNights(previous.arrival,date)){
+    return {arrival:previous.arrival,checkout:date,complete:true};
+  }
+  return {arrival:date,checkout,complete:false};
+}
 function overlaps(start,end,arrival,departure){
   return typeof arrival==='string'&&typeof departure==='string'&&arrival<end&&departure>start;
 }
@@ -79,6 +100,10 @@ function mountStyle(){
     '.availability-legend .manual{border-color:#c48528}',
     '.availability-legend .real{border-color:#b94c49;background:#f5c7c5}',
     '.owner-calendar .admin-calendar td[data-manual-calendar-block="1"] > button{outline:2px solid #d59c2f!important;outline-offset:-2px}',
+    '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar button:is([data-selected-single="true"],[data-range-start="true"],[data-range-end="true"],[data-range-middle="true"]){background:transparent!important;box-shadow:none!important}',
+    '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-selected]{background:transparent!important}',
+    '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-availability-selected-night="1"] > button{background:#dbff00!important;color:#171717!important}',
+    '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-availability-checkout="1"] > button{background:transparent!important;outline:2px dashed #596a75!important;outline-offset:-3px}',
     '.owner-calendar .admin-calendar td[data-protected-calendar-night="1"] > button{box-shadow:inset 0 0 0 2px #d66a6a!important}',
     '@media(max-width:700px){.availability-fields{grid-template-columns:1fr}.availability-calendar-editor{padding:14px}.availability-actions button{flex:1 1 100%}}'
   ].join('\n');
@@ -124,8 +149,8 @@ function mount(section){
   mountStyle();
   const panel=create('div','availability-calendar-editor');
   panel.append(create('h3','','Открыть или закрыть даты'));
-  panel.append(create('p','availability-hint','Нажмите на дату, чтобы выбрать одну ночь. Для диапазона укажите даты в полях. День выезда не блокируется.'));
-  const fromField=labeledInput('С даты','date'),toField=labeledInput('По дату включительно','date');
+  panel.append(create('p','availability-hint','Нажмите дату заезда, затем дату выезда. Например, 11–12 декабря — одна ночь 11-го. День выезда не блокируется.'));
+  const fromField=labeledInput('Заезд · 16:00','date'),toField=labeledInput('Выезд · 12:00 (не занят)','date');
   const rangeBox=create('div','availability-fields');rangeBox.append(fromField.wrapper,toField.wrapper);
   panel.append(rangeBox);
   const kind=labeledInput('Как отметить','select');
@@ -151,19 +176,35 @@ function mount(section){
   panel.append(summary,actions,message,legend);
   grid.append(panel);
   section.classList.add('availability-inline-active');
-  let busy=false,loadingMessage='';
+  let busy=false;
+  let clickSelection=null;
+  function selectedNights(){
+    return calendarCheckoutNights(fromField.input.value,toField.input.value);
+  }
   function selectedRange(){
-    return summarizeAvailability(calendarState,fromField.input.value,toField.input.value);
+    const days=selectedNights();
+    return days?summarizeAvailability(calendarState,days[0],days[days.length-1]):null;
   }
   function setMessage(value,kind='info'){
     if(message.textContent!==value)message.textContent=value;
     message.setAttribute('data-kind',kind);
   }
+  function paintSelectionMarkers(){
+    const from=fromField.input.value,checkout=toField.input.value;
+    const valid=!!selectedNights();
+    for(const cell of calendar.querySelectorAll('td[data-day]')){
+      const day=cell.getAttribute('data-day');
+      const selected=valid&&day>=from&&day<checkout?'1':'0';
+      const departure=valid&&day===checkout?'1':'0';
+      if(cell.getAttribute('data-availability-selected-night')!==selected)cell.setAttribute('data-availability-selected-night',selected);
+      if(cell.getAttribute('data-availability-checkout')!==departure)cell.setAttribute('data-availability-checkout',departure);
+    }
+  }
   function refresh(){
-    const from=fromField.input.value,to=toField.input.value;
-    const days=dateRange(from,to);
+    const days=selectedNights();
+    paintSelectionMarkers();
     if(!days){
-      summary.textContent='Выберите одну ночь или диапазон до 180 ночей.';
+      summary.textContent='Укажите заезд и более поздний выезд (до 180 ночей).';
       close.disabled=open.disabled=true;
       return;
     }
@@ -173,35 +214,38 @@ function mount(section){
       return;
     }
     const overview=selectedRange();
-    const amount=days.length;
     if(overview.hasProtectedDates){
-      summary.textContent='Выбрано ночей: '+amount+'. Есть подтверждённые брони или бонусные ночи — их нельзя открыть или закрыть здесь.';
+      summary.textContent='Выбрано ночей: '+days.length+'. Внутри периода есть подтверждённые брони или бонусные ночи — изменить их здесь нельзя.';
     }else if(overview.manualNights){
-      summary.textContent='Выбрано ночей: '+amount+'. Ручных закрытых: '+overview.manualNights+'. Их можно открыть, остальные даты останутся прежними.';
+      summary.textContent='Выбрано ночей: '+days.length+'. Ручных закрытых: '+overview.manualNights+'. Их можно открыть, остальные даты останутся прежними.';
     }else{
-      summary.textContent='Выбрано ночей: '+amount+'. Все выбранные ночи свободны.';
+      summary.textContent='Выбрано ночей: '+days.length+'. Все выбранные ночи свободны. День выезда не блокируется.';
     }
     close.disabled=busy||!overview.canClose;
     open.disabled=busy||!overview.canOpen;
   }
   function showError(value){setMessage(value,'error');refresh();}
-  function chooseCalendarNight(isoDate){
-    const selected=singleCalendarNightSelection(isoDate);
+  function chooseCalendarDay(date){
+    const selected=selectAvailabilityCalendarClick(clickSelection,date);
     if(!selected)return;
-    fromField.input.value=selected.from;
-    toField.input.value=selected.to;
-    setMessage('Выбрана одна ночь. Для диапазона укажите даты в полях выше.','info');
+    clickSelection=selected;
+    fromField.input.value=selected.arrival;
+    toField.input.value=selected.checkout;
+    setMessage(selected.complete?'Выбран день выезда: он не будет закрыт.':'Выбрана одна ночь. Нажмите следующую дату для выбора дня выезда.','info');
     refresh();
+    window.requestAnimationFrame(paintSelectionMarkers);
   }
-  // Do not copy the legacy React range selection: it can include a blocked
-  // checkout date. For availability, one calendar click always means one night.
-  // The native date inputs remain available for multi-night ranges.
-  grid.addEventListener('click',e=>{
-    if(section.classList.contains('price-calendar-mode')||!(e.target instanceof Element))return;
-    const date=e.target.closest('.admin-calendar button')?.closest('td[data-day]')?.getAttribute('data-day');
-    if(date)chooseCalendarNight(date);
+  // Ignore the legacy React range selection: it includes the checkout day.
+  grid.addEventListener('click',event=>{
+    if(section.classList.contains('price-calendar-mode')||!(event.target instanceof Element))return;
+    const date=event.target.closest('.admin-calendar button')?.closest('td[data-day]')?.getAttribute('data-day');
+    if(date)chooseCalendarDay(date);
   });
-  for(const input of [fromField.input,toField.input])input.addEventListener('input',()=>{setMessage('','info');refresh();});
+  for(const input of [fromField.input,toField.input])input.addEventListener('input',()=>{
+    clickSelection=null;
+    setMessage('','info');
+    refresh();
+  });
   async function send(operation){
     if(busy||!calendarState)return;
     const overview=selectedRange();
@@ -231,13 +275,13 @@ function mount(section){
   }
   close.addEventListener('click',()=>{void send('close');});
   open.addEventListener('click',()=>{void send('open');});
-  currentView={section,refresh,showError};
+  currentView={section,refresh,showError,paintSelectionMarkers};
   refresh();
   void refreshCalendarState();
 }
 function mountAll(){
   document.querySelectorAll('.owner-calendar').forEach(mount);
-  if(currentView?.section?.isConnected)paintStatusMarkers();
+  if(currentView?.section?.isConnected){paintStatusMarkers();currentView.paintSelectionMarkers();}
 }
 if(typeof window!=='undefined'){
   window.addEventListener('focus',()=>{
