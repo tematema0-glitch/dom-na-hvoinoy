@@ -206,24 +206,23 @@ function identityFromRegion(text,today=ekaterinburgToday()){
 // OCR can invent plausible dates from document numbers. A field is accepted
 // only when two separate recognition passes agree on the same value.
 export function verifyPassportReadings(readings){
- const values=key=>readings.map(r=>r?.[key]).filter(Boolean);
- const confirm=key=>{
-  const items=values(key);
-  if(items.length<2)return '';
-  const counts=new Map();
-  for(const item of items)counts.set(item,(counts.get(item)||0)+1);
-  const winners=[...counts].filter(([,count])=>count>=2);
-  return winners.length===1&&winners[0][1]>items.length/2?winners[0][0]:'';
- };
- const fullName=confirm('fullName');
- const birthDate=confirm('birthDate');
- return {
-  fullName,birthDate,
-  warnings:[
-   ...(!fullName?['ФИО не подтверждено двумя независимыми чтениями. Введи вручную.']:[]),
-   ...(!birthDate?['Дата рождения не подтверждена. Введи вручную по паспорту.']:[])
-  ]
- };
+ // Prefer a clearly labeled name even if the date cannot be read.
+ const names=readings.map(r=>r?.fullName||'').filter(Boolean);
+ const counts=new Map();
+ for(const n of names)counts.set(n,(counts.get(n)||0)+1);
+ const ranked=[...counts].sort((a,b)=>b[1]-a[1]);
+ const fullName=ranked.length&&(ranked[0][1]>=2||ranked.length===1)?ranked[0][0]:'';
+ // Date is optional, but must agree across two reads to prevent false positives.
+ const dates=readings.map(r=>r?.birthDate||'').filter(Boolean);
+ const dateCounts=new Map();
+ for(const d of dates)dateCounts.set(d,(dateCounts.get(d)||0)+1);
+ const confirmed=[...dateCounts].filter(([,n])=>n>=2);
+ const birthDate=confirmed.length===1?confirmed[0][0]:'';
+ return {fullName,birthDate,warnings:[
+  ...(!fullName?['Имя не распознано уверенно. Попробуй снять нижнюю страницу паспорта крупнее.']:[]),
+  ...(!birthDate?['Дата рождения не подтверждена — заполни её вручную.']:[]),
+  ...(fullName&&names.length===1?['Имя найдено только одним способом — обязательно сверь написание.']:[])
+ ]};
 }
 
 export async function recognizeRussianPassport(file,onProgress=()=>{},options={}){
@@ -280,8 +279,10 @@ export async function recognizeRussianPassport(file,onProgress=()=>{},options={}
     const text=result?.data?.text||'';
     recognizedCharacters=Math.max(recognizedCharacters,text.trim().length);
     highestConfidence=Math.max(highestConfidence,Number(result?.data?.confidence)||0);
-    // Labeled fields only. Positional guesses are deliberately disallowed.
-    readings.push(extractPassportIdentity(text));
+    // A clean crop can recover the three-line name even when captions vanish.
+    const labeled=extractPassportIdentity(text);
+    const regional=identityFromRegion(text);
+    readings.push({fullName:labeled.fullName||regional.fullName,birthDate:labeled.birthDate});
    }catch{/* Keep manual entry available. */}
    finally{if(crop){crop.width=0;crop.height=0;}}
   }
