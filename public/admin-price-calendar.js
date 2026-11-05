@@ -33,6 +33,9 @@ function style(){
     .price-calendar-reset{color:white;background:transparent;border:1px solid #bcbcbc}
     .owner-calendar:not(.price-calendar-mode) .price-calendar-editor{display:none}
     .owner-calendar.price-calendar-mode .calendar-grid>form:not(.price-calendar-editor){display:none}
+    /* Hide retired one-day form and its legacy list, preserving stored price overrides. */
+    .owner-calendar.legacy-price-controls-hidden > .special-price-form,
+    .owner-calendar.legacy-price-controls-hidden > .special-price-form ~ .history{display:none!important}
     @media(max-width:700px){.price-calendar-dates{grid-template-columns:1fr}.price-calendar-mode-buttons button{flex:1}}
   `;
   document.head.append(css);
@@ -126,7 +129,18 @@ function mount(section){
   let active=false;try{active=sessionStorage.getItem(MODE_KEY)==='price';}catch{}
   setMode(active);
 }
-function mountAll(){document.querySelectorAll('.owner-calendar').forEach(mount);}
+function hideLegacyPriceControls(){
+  const legacyForms=document.querySelectorAll('.owner-calendar > .special-price-form');
+  if(!legacyForms.length)return;
+  style();
+  for(const form of legacyForms){
+    form.parentElement.classList.add('legacy-price-controls-hidden');
+  }
+}
+function mountAll(){
+  hideLegacyPriceControls();
+  document.querySelectorAll('.owner-calendar').forEach(mount);
+}
 if(typeof document!=='undefined'){
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mountAll,{once:true});
   else mountAll();
