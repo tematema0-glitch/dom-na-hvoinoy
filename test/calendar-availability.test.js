@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyAvailabilityChange,parseAvailabilityChange } from '../calendar-availability.js';
-import { summarizeAvailability,singleCalendarNightSelection } from '../public/admin-availability-calendar.js';
+import { summarizeAvailability,singleCalendarNightSelection,calendarCheckoutNights,selectAvailabilityCalendarClick } from '../public/admin-availability-calendar.js';
 
 function clientFixture({blocks=[],bookings=[],rewards=[]}={}){
   const state={blocks:structuredClone(blocks),bookings:structuredClone(bookings),rewards:structuredClone(rewards),queries:[]};
@@ -156,4 +156,35 @@ test('11 December can be closed before a confirmed stay or reward on 12 December
     assert.deepEqual(state.blocks.map(b=>[b.arrival,b.departure]),[['2026-12-11','2026-12-12']]);
     await assert.rejects(applyAvailabilityChange(client,{operation:'close',from:'2026-12-12',to:'2026-12-12'},identifier),e=>e.status===409);
   }
+});
+
+test('two calendar taps 11 -> 12 Dec close only 11 Dec and leave 12 Dec blocked',async()=>{
+  const first=selectAvailabilityCalendarClick(null,'2026-12-11');
+  assert.deepEqual(first,{arrival:'2026-12-11',checkout:'2026-12-12',complete:false});
+  const second=selectAvailabilityCalendarClick(first,'2026-12-12');
+  assert.deepEqual(second,{arrival:'2026-12-11',checkout:'2026-12-12',complete:true});
+  const selected=calendarCheckoutNights(second.arrival,second.checkout);
+  assert.deepEqual(selected,['2026-12-11']);
+  const {client,state,identifier}=clientFixture({blocks:[{id:'blocked12',arrival:'2026-12-12',departure:'2026-12-13',kind:'blocked',note:'existing'}]});
+  assert.equal(summarizeAvailability({blocks:state.blocks,bookings:[],rewards:[]},selected[0],selected.at(-1)).canClose,true);
+  await applyAvailabilityChange(client,{operation:'close',from:selected[0],to:selected.at(-1)},identifier);
+  assert.deepEqual(state.blocks.map(x=>[x.arrival,x.departure]).sort(),[['2026-12-11','2026-12-12'],['2026-12-12','2026-12-13']]);
+});
+test('checkout dates are exclusive, and a third tap starts fresh',()=>{
+  assert.deepEqual(calendarCheckoutNights('2026-12-11','2026-12-12'),['2026-12-11']);
+  assert.deepEqual(calendarCheckoutNights('2026-12-31','2027-01-02'),['2026-12-31','2027-01-01']);
+  assert.equal(calendarCheckoutNights('2026-12-11','2026-12-11'),null);
+  assert.equal(calendarCheckoutNights('2026-12-11','2026-02-30'),null);
+  const start=selectAvailabilityCalendarClick(null,'2026-12-11');
+  const selection=selectAvailabilityCalendarClick(start,'2026-12-13');
+  assert.deepEqual(calendarCheckoutNights(selection.arrival,selection.checkout),['2026-12-11','2026-12-12']);
+  const blocked={blocks:[{arrival:'2026-12-12',departure:'2026-12-13'}],bookings:[],rewards:[]};
+  assert.equal(summarizeAvailability(blocked,'2026-12-11','2026-12-12').canClose,false);
+  assert.deepEqual(selectAvailabilityCalendarClick(selection,'2026-12-14'),{arrival:'2026-12-14',checkout:'2026-12-15',complete:false});
+});
+test('guest checkout day remains available with confirmed next-day arrivals',()=>{
+  const confirmed={blocks:[],bookings:[{arrival:'2026-12-12',departure:'2026-12-13'}],rewards:[]};
+  const days=calendarCheckoutNights('2026-12-11','2026-12-12');
+  assert.equal(summarizeAvailability(confirmed,days[0],days.at(-1)).canClose,true);
+  assert.equal(summarizeAvailability(confirmed,'2026-12-12','2026-12-12').hasProtectedDates,true);
 });
