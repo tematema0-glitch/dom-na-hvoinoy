@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyAvailabilityChange,parseAvailabilityChange } from '../calendar-availability.js';
-import { summarizeAvailability } from '../public/admin-availability-calendar.js';
+import { summarizeAvailability,singleCalendarNightSelection } from '../public/admin-availability-calendar.js';
 
 function clientFixture({blocks=[],bookings=[],rewards=[]}={}){
   const state={blocks:structuredClone(blocks),bookings:structuredClone(bookings),rewards:structuredClone(rewards),queries:[]};
@@ -126,4 +126,34 @@ test('front-end selection identifies manual marks separately from confirmed book
   assert.equal(summarizeAvailability(data,'2026-11-09','2026-11-09').hasProtectedDates,true);
   assert.equal(summarizeAvailability(data,'2026-11-14','2026-11-14').canOpen,false);
   assert.equal(summarizeAvailability(data,'2026-11-15','2026-11-15').canClose,true);
+});
+
+
+test('a click on 11 December selects only the night of 11 December',()=>{
+  assert.deepEqual(singleCalendarNightSelection('2026-12-11'),{from:'2026-12-11',to:'2026-12-11'});
+  assert.deepEqual(singleCalendarNightSelection('2026-12-12'),{from:'2026-12-12',to:'2026-12-12'});
+  assert.equal(singleCalendarNightSelection('2026-02-30'),null);
+});
+
+test('11 December can be closed even when 12 December is manually closed',async()=>{
+  const neighbor={id:'next',arrival:'2026-12-12',departure:'2026-12-13',kind:'blocked',note:'12 December unavailable'};
+  const {client,state,identifier}=clientFixture({blocks:[neighbor]});
+  const before=summarizeAvailability({blocks:state.blocks,bookings:[],rewards:[]},'2026-12-11','2026-12-11');
+  assert.equal(before.canClose,true);
+  const result=await applyAvailabilityChange(client,{operation:'close',from:'2026-12-11',to:'2026-12-11'},identifier);
+  assert.equal(result.affectedNights,1);
+  assert.deepEqual(state.blocks.map(b=>[b.arrival,b.departure]).sort(),[['2026-12-11','2026-12-12'],['2026-12-12','2026-12-13']]);
+  await applyAvailabilityChange(client,{operation:'open',from:'2026-12-11',to:'2026-12-11'},identifier);
+  assert.deepEqual(state.blocks.map(b=>[b.arrival,b.departure]),[['2026-12-12','2026-12-13']]);
+});
+
+test('11 December can be closed before a confirmed stay or reward on 12 December',async()=>{
+  for(const fixtures of [{bookings:[{arrival:'2026-12-12',departure:'2026-12-13'}]},{rewards:[{date:'2026-12-12'}]}]){
+    const {client,state,identifier}=clientFixture(fixtures);
+    const summary=summarizeAvailability({blocks:[],bookings:fixtures.bookings||[],rewards:fixtures.rewards||[]},'2026-12-11','2026-12-11');
+    assert.equal(summary.canClose,true);
+    await applyAvailabilityChange(client,{operation:'close',from:'2026-12-11',to:'2026-12-11'},identifier);
+    assert.deepEqual(state.blocks.map(b=>[b.arrival,b.departure]),[['2026-12-11','2026-12-12']]);
+    await assert.rejects(applyAvailabilityChange(client,{operation:'close',from:'2026-12-12',to:'2026-12-12'},identifier),e=>e.status===409);
+  }
 });

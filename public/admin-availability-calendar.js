@@ -23,6 +23,12 @@ function labeledInput(label,type){
 function dateRange(from,to){
   try{return dateRangeInclusive(from,to,180);}catch{return null;}
 }
+// Clicking a date in the owner availability calendar selects that night only.
+// Departure is exclusive in storage, so an occupied next day is permitted.
+export function singleCalendarNightSelection(isoDate){
+  const days=dateRange(isoDate,isoDate);
+  return days?{from:days[0],to:days[0]}:null;
+}
 function overlaps(start,end,arrival,departure){
   return typeof arrival==='string'&&typeof departure==='string'&&arrival<end&&departure>start;
 }
@@ -118,7 +124,7 @@ function mount(section){
   mountStyle();
   const panel=create('div','availability-calendar-editor');
   panel.append(create('h3','','Открыть или закрыть даты'));
-  panel.append(create('p','availability-hint','Нажмите дату на календаре или выберите начало и конец периода. Подтверждённые заявки защищены.'));
+  panel.append(create('p','availability-hint','Нажмите на дату, чтобы выбрать одну ночь. Для диапазона укажите даты в полях. День выезда не блокируется.'));
   const fromField=labeledInput('С даты','date'),toField=labeledInput('По дату включительно','date');
   const rangeBox=create('div','availability-fields');rangeBox.append(fromField.wrapper,toField.wrapper);
   panel.append(rangeBox);
@@ -179,25 +185,21 @@ function mount(section){
     open.disabled=busy||!overview.canOpen;
   }
   function showError(value){setMessage(value,'error');refresh();}
-  function syncSelection(){
-    const inputs=oldForm.querySelectorAll('input[type="date"]');
-    const first=inputs[0]?.value||'';
-    if(!first)return;
-    const last=inputs[1]?.value||first;
-    // Legacy calendar range selection is shared with the price editor.
-    if(fromField.input.value!==first)fromField.input.value=first;
-    if(toField.input.value!==last)toField.input.value=last;
-    setMessage('Можно выбрать новую дату или диапазон.','info');
+  function chooseCalendarNight(isoDate){
+    const selected=singleCalendarNightSelection(isoDate);
+    if(!selected)return;
+    fromField.input.value=selected.from;
+    toField.input.value=selected.to;
+    setMessage('Выбрана одна ночь. Для диапазона укажите даты в полях выше.','info');
     refresh();
   }
+  // Do not copy the legacy React range selection: it can include a blocked
+  // checkout date. For availability, one calendar click always means one night.
+  // The native date inputs remain available for multi-night ranges.
   grid.addEventListener('click',e=>{
-    if(e.target instanceof Element&&e.target.closest('.admin-calendar button')){
-      window.setTimeout(syncSelection,0);
-      window.requestAnimationFrame(syncSelection);
-    }
-  });
-  grid.addEventListener('keyup',e=>{
-    if(e.target instanceof Element&&e.target.closest('.admin-calendar button'))window.setTimeout(syncSelection,0);
+    if(section.classList.contains('price-calendar-mode')||!(e.target instanceof Element))return;
+    const date=e.target.closest('.admin-calendar button')?.closest('td[data-day]')?.getAttribute('data-day');
+    if(date)chooseCalendarNight(date);
   });
   for(const input of [fromField.input,toField.input])input.addEventListener('input',()=>{setMessage('','info');refresh();});
   async function send(operation){
@@ -230,7 +232,7 @@ function mount(section){
   close.addEventListener('click',()=>{void send('close');});
   open.addEventListener('click',()=>{void send('open');});
   currentView={section,refresh,showError};
-  syncSelection();refresh();
+  refresh();
   void refreshCalendarState();
 }
 function mountAll(){
