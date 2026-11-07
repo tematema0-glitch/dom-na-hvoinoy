@@ -66,3 +66,12 @@ Booking email notifications use `smtp.mail.ru` over SSL/TLS on port 465. All thr
 - Owners see sync status in the availability editor, and can manually request POST /api/admin/avito-sync.
 - If Avito blocks fetching, prior data remain and an error appears in the owner panel. Check live imports after deployment.
 - Sync is one-way: website reservations are not exported to Avito. Manually blocked nights must be reopened manually.
+
+## Бесплатная индексация Яндекса и Google (2026-11-07)
+- Главная страница содержит WebSite и LodgingBusiness JSON-LD, SEO-title/description и ссылку на настоящее объявление Авито. Видимый дизайн не меняется.
+- В sitemap.xml указан только реальный адрес главной, плюс 16 существующих изображений дома и честный lastmod.
+- Яндекс: бесплатный IndexNow. Проверочный файл лежит в public/, уведомление об изменении сайта отправляется после запуска и проверяется раз в 6 часов, пока Yandex не подтвердит ключ. Ошибки не мешают работе бронирований.
+- Google: для обычной страницы используйте Google Search Console. IndexNow не отправляет данные Google. Добавьте https://собери-своих.рф/sitemap.xml и запросите переобход главной через «Проверка URL», если это нужно.
+- Яндекс Вебмастер: проверьте регион Екатеринбург, привяжите действующую Яндекс.Метрику 114076900, убедитесь, что sitemap.xml в разделе «Файлы Sitemap» принят.
+- Обновления в GitHub не гарантируют размещение на Amvera. Проверяйте опубликованный сайт и ответы роботов в кабинетах.
+- Не размещайте фиктивные отзывы, ключевые слова, скрытый SEO-текст или дверные страницы.

@@ -2,9 +2,23 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
         xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
-    <loc>https://собери-своих.рф/</loc>
-    <image:image><image:loc>https://собери-своих.рф/exterior.jpeg</image:loc></image:image>
-    <image:image><image:loc>https://собери-своих.рф/living.jpeg</image:loc></image:image>
-    <image:image><image:loc>https://собери-своих.рф/dining.jpeg</image:loc></image:image>
+    <loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/</loc>
+    <lastmod>2026-11-07</lastmod>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/exterior.jpeg</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/living.jpeg</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/dining.jpeg</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/exterior-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/lounge-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/kitchen-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/sauna-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/bedroom-one-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/bedroom-two-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/bedroom-three-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/bathroom-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/fireplace-screen-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/gazebo-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/karaoke-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/music-screen-1280.webp</image:loc></image:image>
+    <image:image><image:loc>https://xn----9sbekpc0bfogg5c.xn--p1ai/gallery/stairs-1280.webp</image:loc></image:image>
   </url>
 </urlset>

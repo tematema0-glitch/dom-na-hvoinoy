@@ -2,6 +2,7 @@ import express from 'express';
 import { handlePricingAction } from './pricing-updates.js';
 import { saveBirthdayRecord, deleteBirthdayRecord } from './birthday-clients.js';
 import { applyAvailabilityChange } from './calendar-availability.js';
+import { notifyYandexOnSeoChange } from './indexnow-seo.js';
 import { syncAvitoCalendar, AVITO_POLL_MS } from './avito-ical.js';
 import pg from 'pg';
 import { readFile } from 'fs/promises';
@@ -542,6 +543,15 @@ async function startServer(){
   await pool.query(schema);
  }
  app.listen(PORT,'0.0.0.0',()=>console.log(`dom-na-hvoinoy listening on ${PORT}`));
+ if(pool){
+  // Notify Yandex when published HTML/sitemap content changes; first visit
+  // may return 202 while IndexNow checks the public verification key.
+  const checkSeoUpdates=()=>notifyYandexOnSeoChange(pool,path.join(__dirname,'public'))
+    .then(result=>{if(result.accepted||result.pendingVerification)console.info('Yandex IndexNow status:',result.status);})
+    .catch(error=>console.warn('Yandex IndexNow notification failed:',error.code||error.message));
+  void checkSeoUpdates();
+  setInterval(checkSeoUpdates,6*60*60*1000).unref();
+ }
  if(pool){
   const runAvitoSync=()=>syncAvitoCalendar(pool).catch(error=>console.error('Avito calendar sync failed:',error.code||error.message));
   void runAvitoSync();
