@@ -509,7 +509,7 @@ app.get('/',async(req,res,next)=>{try{
  // Replacing them here previously discarded SEO updates at request time.
  const styles=['<link rel="stylesheet" href="/booking-payment-info.css">'].filter(style=>!html.includes(style)).join('');
  if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
- const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/admin-birthdays.js"></script>','<script type="module" src="/booking-payment-info.js"></script>','<script defer src="/seo-analytics.js"></script>'].filter(script=>!html.includes(script)).join('');
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/admin-income-dashboard.js"></script>','<script type="module" src="/admin-birthdays.js"></script>','<script type="module" src="/booking-payment-info.js"></script>','<script defer src="/seo-analytics.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
  res.setHeader('Cache-Control','no-store');
  res.type('html').send(html);
