@@ -43,6 +43,8 @@ export async function applyAvailabilityChange(client,input,newId){
     "SELECT id FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 LIMIT 1",dates);
   if(hasRows(reward))throw conflict('В выбранном периоде есть подтверждённая бонусная ночь. Она не будет изменена.');
   if(x.operation==='close'){
+    const avito=await client.query('SELECT 1 FROM avito_calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1',dates);
+    if(hasRows(avito))throw conflict('Эти ночи уже закрыты в Авито. Измените занятость в календаре Авито.');
     const overlap=await client.query(
       'SELECT id FROM calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1',dates);
     if(hasRows(overlap))throw conflict('Некоторые выбранные даты уже закрыты вручную. Выберите только свободные ночи.');

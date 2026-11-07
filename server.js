@@ -2,6 +2,7 @@ import express from 'express';
 import { handlePricingAction } from './pricing-updates.js';
 import { saveBirthdayRecord, deleteBirthdayRecord } from './birthday-clients.js';
 import { applyAvailabilityChange } from './calendar-availability.js';
+import { syncAvitoCalendar, AVITO_POLL_MS } from './avito-ical.js';
 import pg from 'pg';
 import { readFile } from 'fs/promises';
 import crypto from 'crypto';
@@ -148,16 +149,31 @@ app.get('/api/me',async(req,res)=>{
 app.get('/api/admin/calendar-availability',async(req,res)=>{
  if(!requireAdmin(req,res))return;
  try{
-  const [blocks,bookings,rewards]=await Promise.all([
+  const [blocks,bookings,rewards,avito,status]=await Promise.all([
    pool.query("SELECT id,arrival::text,departure::text,kind,note FROM calendar_blocks ORDER BY arrival,id"),
    pool.query("SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND dates_released=false AND status IN ('confirmed','completed')"),
-   pool.query("SELECT date::text FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL")
+   pool.query("SELECT date::text FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL"),
+    pool.query("SELECT arrival::text,departure::text FROM avito_calendar_blocks ORDER BY arrival"),
+    pool.query("SELECT last_attempt_at,last_success_at,last_error,imported_ranges FROM avito_calendar_sync WHERE source='avito'")
   ]);
   res.setHeader('Cache-Control','no-store');
-  res.json({blocks:blocks.rows,bookings:bookings.rows,rewards:rewards.rows});
+  res.json({blocks:blocks.rows,bookings:bookings.rows,rewards:rewards.rows,avito:avito.rows,avitoSync:status.rows[0]||null});
  }catch(error){
   console.error('Unable to load admin availability',error.code||error.name);
   res.status(500).json({error:'Не удалось загрузить занятость календаря'});
+ }
+});
+// Manual owner refresh, with no access to the original iCal payload.
+app.post('/api/admin/avito-sync',async(req,res)=>{
+ if(!requireAdmin(req,res))return;
+ if(req.get('X-Requested-With')!=='XMLHttpRequest')return res.status(403).json({error:'Запрос запрещён.'});
+ try{
+  const result=await syncAvitoCalendar(pool);
+  res.setHeader('Cache-Control','no-store');
+  return res.json({ok:true,...result});
+ }catch(error){
+  console.error('Avito sync request failed:',error.code||error.message);
+  return res.status(503).json({error:'Не удалось получить календарь Авито. Ранее загруженные даты сохранены.'});
  }
 });
 // Owner-only customer contact list; never exposed through /api/club or public pages.
@@ -196,7 +212,7 @@ app.post('/api/admin/birthdays',async(req,res,next)=>{
  }catch(error){next(error);}
 });
 app.get('/api/pricing', async(req,res)=>res.json(await pricing()));
-app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false UNION SELECT date::text AS arrival,(date+1)::text AS departure FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL ORDER BY arrival`); res.json({ranges:q.rows}); });
+app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false UNION SELECT date::text AS arrival,(date+1)::text AS departure FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL UNION SELECT arrival::text,departure::text FROM avito_calendar_blocks ORDER BY arrival`); res.setHeader('Cache-Control','no-store'); res.json({ranges:q.rows}); });
 
 app.post('/api/members',async(req,res)=>{
  const action=req.body?.action,ph=phone(req.body?.phone);
@@ -238,7 +254,7 @@ app.post('/api/bookings',async(req,res)=>{
    if(old.rowCount) throw Object.assign(new Error('Эта заявка уже отправлена'),{status:409});
    bookingAttempt=reserveBookingPhoneAttempt(ph);
    if(bookingAttempt.retryAfter)throw Object.assign(new Error('Слишком много заявок. Попробуйте немного позже.'),{status:429,retryAfter:bookingAttempt.retryAfter});
-   const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 LIMIT 1`,[arrival,departure]);
+   const occupied=await client.query(`SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 UNION ALL SELECT 1 FROM avito_calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1`,[arrival,departure]);
    const previous=await client.query("SELECT EXISTS(SELECT 1 FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed')) AS has_previous,(SELECT referrer FROM bookings WHERE phone=$1 AND status IN ('confirmed','completed') AND referrer IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS referrer",[ph]);
    let ref=previous.rows[0].referrer,first=false;
    if(!ref&&code){const result=await client.query('SELECT id,phone FROM members WHERE code=$1',[String(code).trim().toUpperCase()]);const member=result.rows[0];if(member&&member.phone!==ph)ref=member.id;}
@@ -314,7 +330,7 @@ async function createReward(x,ownerCreated=false){
 }
 
 app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const x=req.body||{};let statusNotificationQueued=false; try{ switch(x.action){
- case 'blockDates': {if(!validRange(x.arrival,x.departure)||!['blocked','booked'].includes(x.kind||'blocked'))return res.status(400).json({error:'Проверьте период блокировки'});await transaction(async client=>{await lockBookingDates(client);const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 LIMIT 1",[x.arrival,x.departure]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});await client.query('INSERT INTO calendar_blocks(id,arrival,departure,kind,note) VALUES($1,$2,$3,$4,$5)',[id(),x.arrival,x.departure,x.kind||'blocked',String(x.note||'').slice(0,500)]);});break;}
+ case 'blockDates': {if(!validRange(x.arrival,x.departure)||!['blocked','booked'].includes(x.kind||'blocked'))return res.status(400).json({error:'Проверьте период блокировки'});await transaction(async client=>{await lockBookingDates(client);const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 UNION ALL SELECT 1 FROM avito_calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1",[x.arrival,x.departure]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});await client.query('INSERT INTO calendar_blocks(id,arrival,departure,kind,note) VALUES($1,$2,$3,$4,$5)',[id(),x.arrival,x.departure,x.kind||'blocked',String(x.note||'').slice(0,500)]);});break;}
  case 'changeAvailabilityRange': {
   let updated;
   await transaction(async client=>{
@@ -332,7 +348,7 @@ app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const 
   await handlePricingAction(pool,x);break;
  case 'memberNote': await pool.query('UPDATE members SET note=$1 WHERE id=$2',[x.note||'',x.memberId]);break;
  case 'deductPoints': {const points=Number(x.points),requestId=String(x.requestId||'');if(!x.memberId||!Number.isInteger(points)||points<1||points>100000||!requestId||requestId.length>128)return res.status(400).json({error:'Проверьте сумму списания'});await transaction(async client=>{const old=await client.query('SELECT 1 FROM point_ledger WHERE request_id=$1',[requestId]);if(old.rowCount)return;const member=await client.query('SELECT id FROM members WHERE id=$1 FOR UPDATE',[x.memberId]);if(!member.rowCount)throw Object.assign(new Error('Участник не найден'),{status:400});const balance=await client.query("SELECT COALESCE(SUM(CASE WHEN kind IN ('earned','release') THEN points ELSE -points END),0)::int AS points FROM point_ledger WHERE member_id=$1",[x.memberId]);if(balance.rows[0].points<points)throw Object.assign(new Error('Недостаточно баллов'),{status:400});await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id) VALUES($1,$2,'deducted',$3,$4) ON CONFLICT(request_id) DO NOTHING",[x.memberId,points,String(x.reason||'').slice(0,500),requestId]);});break;}
- case 'bookingStatus': {if(!['waitlist','request','confirmed','completed','cancelled'].includes(x.status))return res.status(400).json({error:'Некорректный статус'});await transaction(async client=>{const current=await client.query('SELECT * FROM bookings WHERE id=$1 AND archived=false FOR UPDATE',[x.id]);if(!current.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});const existing=current.rows[0];await lockBookingDates(client);if(x.status==='confirmed'){if(!['request','waitlist','confirmed'].includes(existing.status))throw Object.assign(new Error('Нельзя подтвердить бронь из текущего статуса'),{status:409});const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 LIMIT 1",[existing.arrival,existing.departure,existing.id]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});}if(x.status==='completed'){if(existing.status!=='confirmed')throw Object.assign(new Error('Завершить можно только подтверждённую бронь'),{status:409});if(x.paid!==true)throw Object.assign(new Error('Для завершения необходимо подтвердить оплату'),{status:409});if(Date.now()<Date.parse(`${existing.departure}T07:00:00Z`)&&x.acceptEarlyRisk!==true)throw Object.assign(new Error('Время выезда ещё не наступило'),{status:409});}const q=await client.query('UPDATE bookings SET status=$1,early_credited=CASE WHEN $1=\'completed\' AND $3 THEN true ELSE early_credited END WHERE id=$2 RETURNING *',[x.status,x.id,x.acceptEarlyRisk===true]);const bk=q.rows[0];if(existing.status!==x.status&&['confirmed','cancelled'].includes(x.status)){await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bk.id,{type:'booking-status',status:x.status,name:bk.name,phone:bk.phone,arrival:bk.arrival,departure:bk.departure,guests:bk.guests}]);statusNotificationQueued=true;}if(x.status==='completed'&&bk.referrer)await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,booking_id) VALUES($1,$2,'earned','Завершённое проживание',$3,$4) ON CONFLICT(request_id) DO NOTHING",[bk.referrer,bk.nights,'booking:'+bk.id,bk.id]);});break;}
+ case 'bookingStatus': {if(!['waitlist','request','confirmed','completed','cancelled'].includes(x.status))return res.status(400).json({error:'Некорректный статус'});await transaction(async client=>{const current=await client.query('SELECT * FROM bookings WHERE id=$1 AND archived=false FOR UPDATE',[x.id]);if(!current.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});const existing=current.rows[0];await lockBookingDates(client);if(x.status==='confirmed'){if(!['request','waitlist','confirmed'].includes(existing.status))throw Object.assign(new Error('Нельзя подтвердить бронь из текущего статуса'),{status:409});const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 UNION ALL SELECT 1 FROM avito_calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1",[existing.arrival,existing.departure,existing.id]);if(overlap.rowCount)throw Object.assign(new Error('Даты уже заняты'),{status:409});}if(x.status==='completed'){if(existing.status!=='confirmed')throw Object.assign(new Error('Завершить можно только подтверждённую бронь'),{status:409});if(x.paid!==true)throw Object.assign(new Error('Для завершения необходимо подтвердить оплату'),{status:409});if(Date.now()<Date.parse(`${existing.departure}T07:00:00Z`)&&x.acceptEarlyRisk!==true)throw Object.assign(new Error('Время выезда ещё не наступило'),{status:409});}const q=await client.query('UPDATE bookings SET status=$1,early_credited=CASE WHEN $1=\'completed\' AND $3 THEN true ELSE early_credited END WHERE id=$2 RETURNING *',[x.status,x.id,x.acceptEarlyRisk===true]);const bk=q.rows[0];if(existing.status!==x.status&&['confirmed','cancelled'].includes(x.status)){await client.query('INSERT INTO telegram_outbox(booking_id,payload) VALUES($1,$2)',[bk.id,{type:'booking-status',status:x.status,name:bk.name,phone:bk.phone,arrival:bk.arrival,departure:bk.departure,guests:bk.guests}]);statusNotificationQueued=true;}if(x.status==='completed'&&bk.referrer)await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,booking_id) VALUES($1,$2,'earned','Завершённое проживание',$3,$4) ON CONFLICT(request_id) DO NOTHING",[bk.referrer,bk.nights,'booking:'+bk.id,bk.id]);});break;}
  case 'releaseDates': await pool.query('UPDATE bookings SET dates_released=true WHERE id=$1',[x.id]);break;
  case 'deleteBooking': {if(typeof x.id!=='string'||!x.id.trim())throw Object.assign(new Error('Укажите бронь для архивации'),{status:400});await transaction(async client=>{await lockBookingDates(client);const archived=await client.query('UPDATE bookings SET archived=true,dates_released=true WHERE id=$1 RETURNING id',[x.id]);if(!archived.rowCount)throw Object.assign(new Error('Бронь не найдена'),{status:404});});break;}
  case 'reward': await createReward(x);break;
@@ -343,7 +359,7 @@ app.post('/api/club', async(req,res)=>{ if(!requireAdmin(req,res))return; const 
     await lockBookingDates(client);
     const start=rw.reserved_date;
     const end=new Date(Date.parse(start+'T00:00:00Z')+86400000).toISOString().slice(0,10);
-    const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE id<>$3 AND kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 LIMIT 1",[start,end,rw.id]);
+    const overlap=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE id<>$3 AND kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 UNION ALL SELECT 1 FROM avito_calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1",[start,end,rw.id]);
     if(overlap.rowCount)throw Object.assign(new Error('Бонусную ночь нельзя подтвердить: дата уже занята'),{status:409});
   }
   await client.query('UPDATE rewards SET status=$1,updated_at=now() WHERE id=$2',[x.status,x.id]);if(x.status==='rejected')await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,reward_id) VALUES($1,$2,'release','Награда отклонена',$3,$4) ON CONFLICT(request_id) DO NOTHING",[rw.member_id,rw.points,'reward-release:'+rw.id,rw.id]);if(x.status==='issued'){await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,reward_id) VALUES($1,$2,'release','Резерв награды использован',$3,$4) ON CONFLICT(request_id) DO NOTHING",[rw.member_id,rw.points,'reward-settle:'+rw.id,rw.id]);await client.query("INSERT INTO point_ledger(member_id,points,kind,reason,request_id,reward_id) VALUES($1,$2,'spent','Награда выдана',$3,$4) ON CONFLICT(request_id) DO NOTHING",[rw.member_id,rw.points,'reward-spent:'+rw.id,rw.id]);}});break;}
@@ -382,7 +398,7 @@ async function handleTelegramCallback(callback){
   if(action==='bc'){
    if(booking.status==='confirmed')return {notice:'Бронирование уже подтверждено.',messageStatus:'✅ Бронирование подтверждено'};
    if(!['request','waitlist'].includes(booking.status))return {notice:'Эту бронь нельзя подтвердить из текущего статуса.',showAlert:true};
-   const conflict=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND dates_released=false AND status IN ('confirmed','completed') AND arrival<$2 AND departure>$1 LIMIT 1",[booking.arrival,booking.departure,booking.id]);
+   const conflict=await client.query("SELECT 1 FROM calendar_blocks WHERE arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM bookings WHERE id<>$3 AND archived=false AND dates_released=false AND status IN ('confirmed','completed') AND arrival<$2 AND departure>$1 UNION ALL SELECT 1 FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date >= $1 AND date < $2 UNION ALL SELECT 1 FROM avito_calendar_blocks WHERE arrival<$2 AND departure>$1 LIMIT 1",[booking.arrival,booking.departure,booking.id]);
    if(conflict.rowCount)return {notice:'Даты уже заняты. Бронь не изменена.',showAlert:true};
    const updated=await client.query("UPDATE bookings SET status='confirmed' WHERE id=$1 AND archived=false AND status IN ('request','waitlist') RETURNING id",[booking.id]);
    if(!updated.rowCount)return {notice:'Статус брони уже изменился. Обновите кабинет владельца.',showAlert:true};
@@ -526,6 +542,11 @@ async function startServer(){
   await pool.query(schema);
  }
  app.listen(PORT,'0.0.0.0',()=>console.log(`dom-na-hvoinoy listening on ${PORT}`));
+ if(pool){
+  const runAvitoSync=()=>syncAvitoCalendar(pool).catch(error=>console.error('Avito calendar sync failed:',error.code||error.message));
+  void runAvitoSync();
+  setInterval(runAvitoSync,AVITO_POLL_MS).unref();
+ }
 }
 startServer().catch(error=>{
  console.error('Database schema initialization failed:', error.code || error.name, error.message);

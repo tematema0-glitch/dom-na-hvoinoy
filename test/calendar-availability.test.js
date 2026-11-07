@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { applyAvailabilityChange,parseAvailabilityChange } from '../calendar-availability.js';
 import { summarizeAvailability,singleCalendarNightSelection,calendarCheckoutNights,selectAvailabilityCalendarClick } from '../public/admin-availability-calendar.js';
 
-function clientFixture({blocks=[],bookings=[],rewards=[]}={}){
-  const state={blocks:structuredClone(blocks),bookings:structuredClone(bookings),rewards:structuredClone(rewards),queries:[]};
+function clientFixture({blocks=[],bookings=[],rewards=[],avito=[]}={}){
+  const state={blocks:structuredClone(blocks),bookings:structuredClone(bookings),rewards:structuredClone(rewards),avito:structuredClone(avito),queries:[]};
   let count=0;
   const identifier=()=> 'new-'+(++count);
   const overlapped=(entry,from,to)=>entry.arrival<to&&entry.departure>from;
@@ -13,6 +13,9 @@ function clientFixture({blocks=[],bookings=[],rewards=[]}={}){
     if(sql.includes('FROM bookings WHERE')){
       assert.match(sql,/status IN \('confirmed','completed'\)/);
       return {rowCount:state.bookings.filter(r=>overlapped(r,params[0],params[1])).length,rows:[]};
+    }
+    if(sql.includes('FROM avito_calendar_blocks')){
+      return {rowCount:state.avito.filter(r=>overlapped(r,params[0],params[1])).length,rows:[]};
     }
     if(sql.includes('FROM rewards WHERE')){
       assert.match(sql,/kind='stay'/);
@@ -187,4 +190,22 @@ test('guest checkout day remains available with confirmed next-day arrivals',()=
   const days=calendarCheckoutNights('2026-12-11','2026-12-12');
   assert.equal(summarizeAvailability(confirmed,days[0],days.at(-1)).canClose,true);
   assert.equal(summarizeAvailability(confirmed,'2026-12-12','2026-12-12').hasProtectedDates,true);
+});
+
+
+test('Avito nights are not manually closed; adjacent checkout boundary is free',async()=>{
+  const {client,state,identifier}=clientFixture({avito:[{arrival:'2026-12-12',departure:'2026-12-13'}]});
+  await applyAvailabilityChange(client,{operation:'close',from:'2026-12-11',to:'2026-12-11'},identifier);
+  assert.deepEqual(state.blocks.map(x=>[x.arrival,x.departure]),[['2026-12-11','2026-12-12']]);
+  await assert.rejects(applyAvailabilityChange(client,{operation:'close',from:'2026-12-12',to:'2026-12-12'},identifier),e=>e.status===409);
+});
+
+test('opening a manual block never removes overlapping Avito dates',async()=>{
+  const {client,state,identifier}=clientFixture({
+    blocks:[{id:'manual',arrival:'2026-12-12',departure:'2026-12-13',kind:'blocked',note:''}],
+    avito:[{arrival:'2026-12-12',departure:'2026-12-13'}]
+  });
+  await applyAvailabilityChange(client,{operation:'open',from:'2026-12-12',to:'2026-12-12'},identifier);
+  assert.deepEqual(state.blocks,[]);
+  assert.deepEqual(state.avito,[{arrival:'2026-12-12',departure:'2026-12-13'}]);
 });

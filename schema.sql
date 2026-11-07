@@ -111,3 +111,23 @@ CREATE TABLE IF NOT EXISTS client_birthdays (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Imported Avito dates are separate from manual blocks and confirmed bookings.
+-- DTEND is exclusive: check-out day remains open for the next check-in.
+CREATE TABLE IF NOT EXISTS avito_calendar_blocks (
+  arrival date NOT NULL,
+  departure date NOT NULL,
+  PRIMARY KEY (arrival, departure),
+  CHECK (departure > arrival)
+);
+CREATE INDEX IF NOT EXISTS avito_calendar_blocks_dates_idx ON avito_calendar_blocks(arrival,departure);
+
+CREATE TABLE IF NOT EXISTS avito_calendar_sync (
+  source text PRIMARY KEY,
+  last_attempt_at timestamptz,
+  last_success_at timestamptz,
+  last_error text,
+  imported_ranges integer NOT NULL DEFAULT 0,
+  empty_confirmations integer NOT NULL DEFAULT 0
+);
+INSERT INTO avito_calendar_sync(source) VALUES('avito') ON CONFLICT(source) DO NOTHING;

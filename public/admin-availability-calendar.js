@@ -63,13 +63,16 @@ export function summarizeAvailability(data,from,to){
   const manual=Array.isArray(data?.blocks)?data.blocks:[];
   const bookings=Array.isArray(data?.bookings)?data.bookings:[];
   const rewards=Array.isArray(data?.rewards)?data.rewards:[];
+  const avito=Array.isArray(data?.avito)?data.avito:[];
   const blocks=manual.filter(item=>overlaps(start,end,item.arrival,item.departure));
   const booked=bookings.filter(item=>overlaps(start,end,item.arrival,item.departure));
   const rewardDates=rewards.filter(item=>item.date>=start&&item.date<end);
+  const imported=avito.filter(item=>overlaps(start,end,item.arrival,item.departure));
+  const avitoNights=days.filter(day=>imported.some(block=>day>=block.arrival&&day<block.departure)).length;
   const manualNights=days.filter(day=>blocks.some(block=>day>=block.arrival&&day<block.departure)).length;
   const locked=booked.length>0||rewardDates.length>0;
   return {days,manualNights,manualBlocks:blocks,bookingCount:booked.length,rewardCount:rewardDates.length,
-    canClose:!locked&&manualNights===0,canOpen:!locked&&manualNights>0,hasProtectedDates:locked};
+    avitoNights,canClose:!locked&&manualNights===0&&avitoNights===0,canOpen:!locked&&manualNights>0,hasProtectedDates:locked};
 }
 function mountStyle(){
   if(document.getElementById(STYLE_ID))return;
@@ -99,6 +102,10 @@ function mountStyle(){
     '.availability-legend i{display:inline-block;height:12px;width:12px;border-radius:5px;border:2px solid #fff}',
     '.availability-legend .manual{border-color:#c48528}',
     '.availability-legend .real{border-color:#b94c49;background:#f5c7c5}',
+    '.availability-legend .avito{border-color:#398db0;background:#d4edf6}',
+    '.owner-calendar .admin-calendar td[data-avito-calendar-block="1"] > button{outline:2px solid #398db0!important;outline-offset:-2px}',
+    '.availability-avito-sync{justify-self:start;border:1px solid #9aa2a5;color:#fff;background:#33353a;border-radius:10px;min-height:42px;padding:8px 14px;cursor:pointer;font-size:14px}',
+    '.availability-avito-sync:disabled{opacity:.55;cursor:wait}',
     '.owner-calendar .admin-calendar td[data-manual-calendar-block="1"] > button{outline:2px solid #d59c2f!important;outline-offset:-2px}',
     '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar button:is([data-selected-single="true"],[data-range-start="true"],[data-range-end="true"],[data-range-middle="true"]){background:transparent!important;box-shadow:none!important}',
     '.owner-calendar.availability-inline-active:not(.price-calendar-mode) .admin-calendar td[data-selected]{background:transparent!important}',
@@ -117,11 +124,13 @@ function paintStatusMarkers(){
     const date=cell.getAttribute('data-day');
     if(!date)continue;
     const manual=calendarState.blocks.some(block=>date>=block.arrival&&date<block.departure);
+    const avito=(calendarState.avito||[]).some(block=>date>=block.arrival&&date<block.departure);
     const protectedDate=calendarState.bookings.some(booking=>date>=booking.arrival&&date<booking.departure)||
        calendarState.rewards.some(reward=>reward.date===date);
-    const man=manual?'1':'0',pro=protectedDate?'1':'0';
+    const man=manual?'1':'0',pro=protectedDate?'1':'0',av=avito?'1':'0';
     if(cell.getAttribute('data-manual-calendar-block')!==man)cell.setAttribute('data-manual-calendar-block',man);
     if(cell.getAttribute('data-protected-calendar-night')!==pro)cell.setAttribute('data-protected-calendar-night',pro);
+    if(cell.getAttribute('data-avito-calendar-block')!==av)cell.setAttribute('data-avito-calendar-block',av);
   }
 }
 async function refreshCalendarState(force=false){
@@ -133,7 +142,7 @@ async function refreshCalendarState(force=false){
     .then(async response=>{
       const result=await response.json();
       if(!response.ok)throw Error(response.status===401?'Войдите в админку заново.':(result.error||'Не удалось загрузить занятость.'));
-      if(!Array.isArray(result.blocks)||!Array.isArray(result.bookings)||!Array.isArray(result.rewards))throw Error('Некорректные данные календаря');
+      if(!Array.isArray(result.blocks)||!Array.isArray(result.bookings)||!Array.isArray(result.rewards)||!Array.isArray(result.avito))throw Error('Некорректные данные календаря');
       calendarState=result;lastSuccess=Date.now();
       currentView?.refresh();paintStatusMarkers();
     })
@@ -173,8 +182,12 @@ function mount(section){
   const legend=create('div','availability-legend');
   const first=create('span');first.append(create('i','manual'),document.createTextNode('Ручная отметка'));
   const second=create('span');second.append(create('i','real'),document.createTextNode('Подтверждённая бронь'));
-  legend.append(first,second);
-  panel.append(summary,actions,message,legend);
+  const third=create('span');third.append(create('i','avito'),document.createTextNode('Авито (автоматически)'));
+  legend.append(first,second,third);
+  const avitoStatus=create('p','availability-avito-status','Авито: ожидается первая синхронизация.');
+  const avitoSync=create('button','availability-avito-sync','Обновить календарь Авито');
+  avitoSync.type='button';
+  panel.append(summary,actions,message,legend,avitoStatus,avitoSync);
   grid.append(panel);
   section.classList.add('availability-inline-active');
   let busy=false;
@@ -201,7 +214,21 @@ function mount(section){
       if(cell.getAttribute('data-availability-checkout')!==departure)cell.setAttribute('data-availability-checkout',departure);
     }
   }
+  function updateAvitoStatus(){
+    const value=calendarState?.avitoSync;
+    if(!calendarState){avitoStatus.textContent='Авито: загружаем состояние синхронизации.';return;}
+    const stamp=value?.last_success_at;
+    const time=stamp?new Date(stamp):null;
+    const lastSuccess=time&&Number.isFinite(time.valueOf())?
+      time.toLocaleString('ru-RU',{timeZone:'Asia/Yekaterinburg',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
+    const stale=time&&Date.now()-time.valueOf()>60*60*1000;
+    const count=Number(value?.imported_ranges||0);
+    if(value?.last_error)avitoStatus.textContent='Авито: ошибка последней проверки. '+value.last_error+(lastSuccess?' Последнее обновление '+lastSuccess+'.':' Нет успешного обновления.');
+    else if(!lastSuccess)avitoStatus.textContent='Авито: ещё не удалось загрузить календарь.';
+    else avitoStatus.textContent='Авито: '+count+' занятых периодов, обновлено '+lastSuccess+(stale?' (данные устарели).':'.');
+  }
   function refresh(){
+    updateAvitoStatus();
     const days=selectedNights();
     paintSelectionMarkers();
     if(!days){
@@ -217,6 +244,10 @@ function mount(section){
     const overview=selectedRange();
     if(overview.hasProtectedDates){
       summary.textContent='Выбрано ночей: '+days.length+'. Внутри периода есть подтверждённые брони или бонусные ночи — изменить их здесь нельзя.';
+    }else if(overview.avitoNights&&overview.manualNights){
+      summary.textContent='Выбрано ночей: '+days.length+'. В Авито закрыто: '+overview.avitoNights+', вручную: '+overview.manualNights+'. Можно открыть ручные отметки, но Авито останется занятым.';
+    }else if(overview.avitoNights){
+      summary.textContent='Выбрано ночей: '+days.length+'. Закрыто в Авито: '+overview.avitoNights+'. Для изменения откройте даты в Авито.';
     }else if(overview.manualNights){
       summary.textContent='Выбрано ночей: '+days.length+'. Ручных закрытых: '+overview.manualNights+'. Их можно открыть, остальные даты останутся прежними.';
     }else{
@@ -274,6 +305,18 @@ function mount(section){
       await refreshCalendarState(true);
     }
   }
+  avitoSync.addEventListener('click',async()=>{
+    if(avitoSync.disabled)return;
+    avitoSync.disabled=true;
+    setMessage('Проверяем календарь Авито…','info');
+    try{
+      const response=await fetch('/api/admin/avito-sync',{method:'POST',credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest'}});
+      const result=await response.json();
+      if(!response.ok||!result.ok)throw Error(result.error||'Не удалось обновить календарь Авито.');
+      setMessage(result.pendingEmpty?'Авито вернул пустой календарь. Для безопасности необходима повторная проверка.':'Занятость Авито обновлена.','success');
+    }catch(error){setMessage(error.message||'Ошибка синхронизации Авито','error');}
+    finally{avitoSync.disabled=false;await refreshCalendarState(true);}
+  });
   close.addEventListener('click',()=>{void send('close');});
   open.addEventListener('click',()=>{void send('open');});
   currentView={section,refresh,showError,paintSelectionMarkers};

@@ -56,3 +56,13 @@ Booking email notifications use `smtp.mail.ru` over SSL/TLS on port 465. All thr
 - `schema.sql` creates the production database structure.
 - `seed.sql` is only for local/demo use and must not be run in production.
 - The frontend is preserved as a static build and should not be redesigned in this pass.
+
+
+## Avito iCal synchronization
+- Source: https://www.avito.ru/calendars-export/80/92/8095324792.ics (owner explicitly approved publishing). Optional override: AVITO_ICAL_URL.
+- Imports occupied **nights** only, not guest details, prices or bookings. DTEND is exclusive: check-out day remains open.
+- Polls at startup and every 15 minutes. Stores ranges in PostgreSQL in avito_calendar_blocks, separate from calendar_blocks, bookings and rewards.
+- Failed updates preserve last good dates. An unexpectedly empty feed requires two consecutive successful empty imports to clear a nonempty calendar.
+- Owners see sync status in the availability editor, and can manually request POST /api/admin/avito-sync.
+- If Avito blocks fetching, prior data remain and an error appears in the owner panel. Check live imports after deployment.
+- Sync is one-way: website reservations are not exported to Avito. Manually blocked nights must be reopened manually.
