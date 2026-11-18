@@ -54,7 +54,7 @@ function includesNight(entry,date){
 }
 function isReward(entry,date){return entry&&entry.date===date;}
 function safeArray(value){return Array.isArray(value)?value:[];}
-export function buildIncomeReport({availability,pricing,mode='month',month,today,includeManualBlocked=true,includeFuture=false}={}){
+export function buildIncomeReport({availability,pricing,mode='month',month,today,includeManualBlocked=true,includeFuture=false,deductCleaningCost=true}={}){
  const {from,toExclusive}=incomeWindow(mode,month,today);
  const manual=safeArray(availability?.blocks);
  const avito=safeArray(availability?.avito);
@@ -84,7 +84,7 @@ export function buildIncomeReport({availability,pricing,mode='month',month,today
   if(!includeFuture&&date>today){excludedFuture++;continue;}
   if(source==='manualBlocked'&&!includeManualBlocked){excludedManual++;continue;}
   const price=priceForNight(pricing,date);
-  const cost=CLEANING_COST_PER_NIGHT;
+  const cost=deductCleaningCost?CLEANING_COST_PER_NIGHT:0;
   const ownerShare=(price-cost)/OWNER_SHARE_PARTS;
   const row={date,month:date.slice(0,7),source,price,cost,share:ownerShare};
   rows.push(row);sources[source]++;
@@ -96,7 +96,7 @@ export function buildIncomeReport({availability,pricing,mode='month',month,today
   window:{from,toExclusive},mode,month,today,
   gross,expenses,share,nights,rows,months,sources,
   excludedManual,excludedFuture,excludedRewards,overlapNights,
-  perNightExpense:CLEANING_COST_PER_NIGHT,shareParts:OWNER_SHARE_PARTS,
+  perNightExpense:deductCleaningCost?CLEANING_COST_PER_NIGHT:0,shareParts:OWNER_SHARE_PARTS,
   isEstimate:true
  };
 }
