@@ -127,14 +127,14 @@ function renderMonthlyTable(container,report){
  container.replaceChildren();
  const table=element('table','income-month-table');
  const head=element('thead'),tr=element('tr');
- for(const col of ['Месяц','Ночей','Сумма по тарифам','−3 000 ₽/ночь','Твоя доля']){
+ for(const col of ['Месяц','Ночей','Сумма по тарифам',report.perNightExpense?'−3 000 ₽/ночь':'Вычет отключён','Твоя доля']){
   const th=element('th','',col);tr.append(th);
  }
  head.append(tr);table.append(head);
  const body=element('tbody');
  for(const item of report.months){
   const row=element('tr');
-  for(const value of [monthName(item.month),String(item.nights),fmt(item.gross),'−'+fmt(item.expenses),fmt(item.share)]){
+  for(const value of [monthName(item.month),String(item.nights),fmt(item.gross),item.expenses?'−'+fmt(item.expenses):fmt(0),fmt(item.share)]){
    row.append(element('td','',value));
   }
   body.append(row);
@@ -146,7 +146,7 @@ function setupDashboard(section){
  installStyles();
  const state={
   period:'quarter',month:localToday().slice(0,7),
-  includeManualBlocked:true,includeFuture:false,
+  includeManualBlocked:true,includeFuture:false,deductCleaningCost:true,
   availability:null,pricing:null,lastLoad:0,loading:false
  };
  section.id='admin-income-dashboard';
@@ -155,19 +155,20 @@ function setupDashboard(section){
  section.innerHTML=[
   '<div class="income-heading"><div><p class="income-eyebrow">АНАЛИТИКА · КОТТЕДЖ НА ХВОЙНОЙ</p>',
   '<h2>Доход по занятым ночам</h2>',
-  '<p>Автоматический расчёт по календарям Авито и сайта. За каждую занятую ночь: (цена − 3 000 ₽) ÷ 2.</p></div>',
+  '<p>Автоматический расчёт по календарям Авито и сайта. За каждую занятую ночь: <span class="income-formula">(цена − 3 000 ₽) ÷ 2</span>.</p></div>',
   '<button class="income-refresh" type="button">Обновить данные</button></div>',
   '<div class="income-filters"><div class="income-periods" role="group" aria-label="Период"></div>',
   '<label class="income-month-picker">По месяц включительно <input type="month" aria-label="Последний месяц отчёта"></label></div>',
   '<div class="income-options">',
   '<label><input class="income-include-manual" type="checkbox" checked> Учитывать вручную закрытые ночи</label>',
-  '<label><input class="income-include-future" type="checkbox"> Учитывать будущие даты</label></div>',
+  '<label><input class="income-include-future" type="checkbox"> Учитывать будущие даты</label>',
+  '<label><input class="income-deduct-cleaning" type="checkbox" checked> Вычитать 3 000 ₽ за ночь</label></div>',
   '<p class="income-status" role="status" aria-live="polite">Загружаем календарь и цены…</p>',
   '<div class="income-kpis">',
   '<div class="income-kpi primary"><small>Твоя расчётная доля</small><strong data-income="share">—</strong></div>',
   '<div class="income-kpi"><small>Закрытых ночей в расчёте</small><strong data-income="nights">—</strong></div>',
   '<div class="income-kpi"><small>Стоимость этих ночей</small><strong data-income="gross">—</strong></div>',
-  '<div class="income-kpi"><small>Расходы по 3 000 ₽</small><strong data-income="costs">—</strong></div></div>',
+  '<div class="income-kpi"><small class="income-expense-label">Расходы по 3 000 ₽</small><strong data-income="costs">—</strong></div></div>',
   '<div class="income-content"><div class="income-chart-panel">',
   '<div class="income-card-head"><h3>Динамика по периодам</h3><span class="income-chart-subtitle">Твоя доля, ₽</span></div>',
   '<div class="income-chart-scroll" aria-label="График расчётного дохода"></div></div>',
@@ -197,11 +198,13 @@ function setupDashboard(section){
  }
  const manual=section.querySelector('.income-include-manual');
  const future=section.querySelector('.income-include-future');
+ const deductCleaning=section.querySelector('.income-deduct-cleaning');
  const status=section.querySelector('.income-status');
  const refreshButton=section.querySelector('.income-refresh');
  anchor.addEventListener('change',()=>{if(/^\d{4}-\d{2}$/.test(anchor.value)){state.month=anchor.value;render();}});
  manual.addEventListener('change',()=>{state.includeManualBlocked=manual.checked;render();});
  future.addEventListener('change',()=>{state.includeFuture=future.checked;render();});
+ deductCleaning.addEventListener('change',()=>{state.deductCleaningCost=deductCleaning.checked;render();});
  refreshButton.addEventListener('click',()=>{void load();});
  function render(){
   if(!state.availability||!state.pricing)return;
@@ -211,17 +214,20 @@ function setupDashboard(section){
     availability:state.availability,pricing:state.pricing,
     mode:state.period,month:state.month,today:localToday(),
     includeManualBlocked:state.includeManualBlocked,
-    includeFuture:state.includeFuture
+    includeFuture:state.includeFuture,
+    deductCleaningCost:state.deductCleaningCost
    });
   }catch(error){
    status.dataset.error='true';
    status.textContent=error.message||'Ошибка расчёта';
    return;
   }
+  section.querySelector('.income-formula').textContent=report.perNightExpense?'(цена − 3 000 ₽) ÷ 2':'цена ÷ 2';
+  section.querySelector('.income-expense-label').textContent=report.perNightExpense?'Расходы по 3 000 ₽':'Расходы отключены';
   section.querySelector('[data-income="share"]').textContent=fmt(report.share);
   section.querySelector('[data-income="nights"]').textContent=String(report.nights);
   section.querySelector('[data-income="gross"]').textContent=fmt(report.gross);
-  section.querySelector('[data-income="costs"]').textContent='−'+fmt(report.expenses);
+  section.querySelector('[data-income="costs"]').textContent=report.expenses?'−'+fmt(report.expenses):fmt(0);
   section.querySelector('.income-period-label').textContent=
    dateName(report.window.from)+' — '+dateName(new Date(Date.parse(report.window.toExclusive+'T00:00:00Z')-86400000).toISOString().slice(0,10));
   renderBars(section.querySelector('.income-chart-scroll'),report);
