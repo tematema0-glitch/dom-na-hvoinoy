@@ -18,6 +18,25 @@ test('deducts 3000 for EACH night, then divides the remainder by two',()=>{
  assert.deepEqual(result.rows.map(row=>row.share),[13500,15500,10000]);
 });
 
+test('3 000 ₽ per-night deduction can be turned off and on',()=>{
+ const data={...empty,avito:[{arrival:'2026-12-11',departure:'2026-12-14'}]};
+ const normal=report(data);
+ const disabled=report(data,{deductCleaningCost:false});
+ const enabled=report(data,{deductCleaningCost:true});
+ assert.equal(normal.share,39000);
+ assert.equal(enabled.share,normal.share);
+ assert.equal(disabled.nights,normal.nights);
+ assert.equal(disabled.gross,87000);
+ assert.equal(disabled.perNightExpense,0);
+ assert.equal(disabled.expenses,0);
+ assert.equal(disabled.share,43500);
+ assert.deepEqual(disabled.rows.map(row=>row.cost),[0,0,0]);
+ assert.deepEqual(disabled.rows.map(row=>row.share),[15000,17000,11500]);
+ assert.equal(disabled.months.find(item=>item.month==='2026-12').expenses,0);
+ assert.equal(disabled.months.find(item=>item.month==='2026-12').share,43500);
+ assert.equal(incomeChartSeries(disabled).find(item=>item.key==='2026-12-12').share,17000);
+});
+
 test('nightly special prices override weekday tariffs',()=>{
  const data={...empty,avito:[{arrival:'2026-12-11',departure:'2026-12-14'}]};
  const result=buildIncomeReport({availability:data,pricing:{...prices,dates:{'2026-12-12':40000}},mode:'month',month:'2026-12',today});
