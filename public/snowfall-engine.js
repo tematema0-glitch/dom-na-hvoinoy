@@ -260,7 +260,22 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
   }
 
   const onResize = () => resize();
+  const onScroll = () => {
+    if (!collide) return;
+    edges = [];
+    lastEdges = 0;
+    for (const flake of flakes) {
+      if (flake.edge) releaseFromEdge(flake);
+    }
+  };
   window.addEventListener('resize', onResize, { passive: true });
+  if (collide) window.addEventListener('scroll', onScroll, { passive: true });
+  const resizeObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => {
+      const rect = canvas.getBoundingClientRect();
+      if (Math.abs(rect.width - width) > 1 || Math.abs(rect.height - height) > 1) resize();
+    }) : null;
+  resizeObserver?.observe(canvas);
   resize();
   if (!reduceMotion) frame = requestAnimationFrame(tick);
 
@@ -272,6 +287,8 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
       removed = true;
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', onResize);
+      if (collide) window.removeEventListener('scroll', onScroll);
+      resizeObserver?.disconnect();
       flakes = [];
       edges = [];
       ctx.clearRect(0, 0, width, height);
