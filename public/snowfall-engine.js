@@ -755,8 +755,27 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   let frame = 0, previousTime = 0, lastScan = 0, removed = false, sceneDirty = true;
   let gravity = { x: 0, y: 1 }, targetGravity = { x: 0, y: 1 };
   const fps = 32; // Only snow FALLING updates at 32 fps; scroll never waits.
-  const onScroll = () => { if (!removed) { sceneDirty = true; syncTiles(); } };
-  const onResize = () => { if (!removed) resize(); };
+  const clock = () => window.performance?.now?.() ?? Date.now();
+  let scrollMotion = null;
+  const onScroll = () => {
+    if (removed) return;
+    sceneDirty = true;
+    syncTiles();
+    const movement = classifySnowScroll(scrollMotion, viewportTop(), clock());
+    scrollMotion = movement.state;
+    if (!movement.shake || !collide || !settings.interaction || document.hidden) return;
+    syncScene(movement.state.time);
+    shedSnowbanks(
+      activeBanks, viewportTop(), viewHeight, movement.delta,
+      chunks, crumbs, clamp(movement.speed / 3200, 0.5, 1)
+    );
+  };
+  const onResize = () => {
+    if (removed) return;
+    resize();
+    // Safari's disappearing address bar must not trigger a fake shake.
+    scrollMotion = classifySnowScroll(null, viewportTop(), clock()).state;
+  };
 
   const viewportTop = () => {
     const y = Number.isFinite(window.scrollY) ? window.scrollY :
@@ -1107,6 +1126,7 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   window.addEventListener('resize', onResize, { passive: true });
   window.addEventListener('scroll', onScroll, { passive: true });
   resize();
+  scrollMotion = classifySnowScroll(null, viewportTop(), clock()).state;
   if (!reduceMotion) frame = requestAnimationFrame(tick);
   return {
     update, setGravity, setWind,
