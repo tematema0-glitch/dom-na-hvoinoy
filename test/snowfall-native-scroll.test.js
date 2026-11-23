@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_SNOWFALL_SETTINGS } from '../public/snowfall-config.js';
-import { createDocumentSnowfallStage, measureSnowScene } from '../public/snowfall-engine.js';
+import { createDocumentSnowfallStage, measureSnowScene, stableDocumentRect } from '../public/snowfall-engine.js';
 
 function fakeElement(left, docTop, width, height, win) {
   return {
@@ -66,7 +66,9 @@ test('tiles stay at document positions during scrolling without rerender or JS f
       hidden: false,
       documentElement: { clientWidth: 390, clientHeight: 800 },
       querySelector: selector => selector === 'main'
-        ? { getBoundingClientRect: () => ({ bottom: 9000 - win.scrollY }) }
+        ? { offsetTop: 0, offsetLeft: 0, offsetParent: null,
+            getBoundingClientRect: () => ({ left: 0, top: -win.scrollY, right: 390,
+              bottom: 9000 - win.scrollY, width: 390, height: 9000 }) }
         : null,
       querySelectorAll(selector) {
         if (selector === 'img, video') return [photo];
@@ -141,5 +143,60 @@ test('tiles stay at document positions during scrolling without rerender or JS f
       if (value === undefined) delete globalThis[name];
       else globalThis[name] = value;
     }
+  }
+});
+
+
+test('iOS rubber-band bounce does not detach snowbanks from buttons or pictures', () => {
+  const oldWindow = globalThis.window;
+  const win = {
+    scrollY: 0, bounce: 0,
+    getComputedStyle: () => ({ borderTopLeftRadius: '24px', position: 'static' })
+  };
+  function element(docLeft, docTop, width, height, parent = null) {
+    return {
+      offsetLeft: parent ? docLeft - parent.offsetLeft : docLeft,
+      offsetTop: parent ? docTop - parent.offsetTop : docTop,
+      offsetParent: parent,
+      getBoundingClientRect() {
+        const top = docTop - win.scrollY + win.bounce;
+        return { left: docLeft, right: docLeft + width, top,
+          bottom: top + height, width, height };
+      },
+      closest() { return null; }
+    };
+  }
+  try {
+    globalThis.window = win;
+    const parent = element(18, 230, 390, 1600);
+    const button = element(40, 940, 330, 64, parent);
+    const photo = element(28, 1180, 354, 240, parent);
+    const root = { querySelectorAll(selector) {
+      if (selector === 'img, video') return [photo];
+      return [button];
+    } };
+    const reference = measureSnowScene(root, 390, 850, 0, 5000);
+    assert.equal(reference.surfaces[0].top, 941);
+    assert.equal(reference.masks[0].top, 1179);
+
+    // Overscroll at the very top: Safari stretches visual content, scrollY = 0.
+    win.bounce = 125;
+    const topBounce = measureSnowScene(root, 390, 850, 0, 5000);
+    assert.deepEqual(topBounce, reference);
+    assert.equal(stableDocumentRect(button).top, 940);
+
+    // Overscroll at the bottom: scrollY remains clamped at the bottom,
+    // but boundingClientRect still shifts as the page rubber-bands.
+    win.scrollY = 6400;
+    win.bounce = -90;
+    const bottomBounce = measureSnowScene(root, 390, 850, 6400, 7000);
+    assert.equal(bottomBounce.surfaces[0].top, reference.surfaces[0].top);
+    assert.equal(bottomBounce.masks[0].top, reference.masks[0].top);
+    win.bounce = 0;
+    const afterBounce = measureSnowScene(root, 390, 850, 6400, 7000);
+    assert.deepEqual(bottomBounce, afterBounce);
+  } finally {
+    if (oldWindow === undefined) delete globalThis.window;
+    else globalThis.window = oldWindow;
   }
 });

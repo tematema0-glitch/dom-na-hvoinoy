@@ -119,6 +119,36 @@ function bounding(element) {
   return { left, top, right, bottom, width: right - left, height: bottom - top };
 }
 
+// Browser getBoundingClientRect() may include a temporary elastic visual
+// translation while iOS overscroll is active, even though scrollY is clamped
+// at zero. Anchor snowbanks and image masks to layout offsets instead.
+// These properties do not drift when Safari applies rubber-band scrolling.
+export function stableDocumentRect(element, visibleRect, pageY = 0) {
+  const rect = visibleRect || bounding(element);
+  if (!rect) return null;
+  const fallback = {
+    left: rect.left, right: rect.right, top: rect.top + pageY,
+    bottom: rect.bottom + pageY, width: rect.width, height: rect.height
+  };
+  let current = element;
+  let left = 0, top = 0, depth = 0;
+  if (!current || !Number.isFinite(current.offsetTop) ||
+      !Number.isFinite(current.offsetLeft)) return fallback;
+  do {
+    left += current.offsetLeft;
+    top += current.offsetTop;
+    current = current.offsetParent;
+    depth++;
+  } while (current && depth < 32 &&
+           Number.isFinite(current.offsetTop) &&
+           Number.isFinite(current.offsetLeft));
+  if (current || !Number.isFinite(top) || !Number.isFinite(left)) return fallback;
+  return {
+    left, right: left + rect.width, top, bottom: top + rect.height,
+    width: rect.width, height: rect.height
+  };
+}
+
 function intersects(rect, width, height, margin = 0) {
   return rect && rect.width > 0 && rect.height > 0 &&
     rect.right > -margin && rect.left < width + margin &&
@@ -133,33 +163,42 @@ export function measureSnowScene(root, width, height, pageY = 0, buffer = 0) {
   const surfaces = [];
 
   for (const element of query('img, video')) {
-    const rect = bounding(element);
-    if (!intersects(rect, width, height, buffer + 4) || rect.width < 12 || rect.height < 12) continue;
-    // The 1px bleed prevents antialiasing from drawing flakes over a photo.
+    const visible = bounding(element);
+    if (!visible) continue;
+    const doc = stableDocumentRect(element, visible, pageY);
+    const pageViewport = { ...doc, top: doc.top - pageY, bottom: doc.bottom - pageY };
+    if (!intersects(pageViewport, width, height, buffer + 4) ||
+        doc.width < 12 || doc.height < 12) continue;
+    // Both ends stay tied to document layout during Safari's elastic bounce.
     masks.push({
-      left: Math.max(0, rect.left - 1),
-      top: pageY + Math.max(-buffer, rect.top - 1),
-      right: Math.min(width, rect.right + 1),
-      bottom: pageY + Math.min(height + buffer, rect.bottom + 1)
+      left: Math.max(0, doc.left - 1),
+      top: Math.max(pageY - buffer, doc.top - 1),
+      right: Math.min(width, doc.right + 1),
+      bottom: Math.min(pageY + height + buffer, doc.bottom + 1)
     });
   }
 
   for (const element of query(SNOWBANK_SURFACE_SELECTOR)) {
     if (surfaces.length >= 24) break;
-    const rect = bounding(element);
-    if (!intersects(rect, width, height, buffer + 40) || rect.width < 80 ||
-        rect.height < 25 || rect.height > height * 2.2) continue;
+    const visible = bounding(element);
+    if (!visible) continue;
+    const doc = stableDocumentRect(element, visible, pageY);
+    const pageViewport = { ...doc, top: doc.top - pageY, bottom: doc.bottom - pageY };
+    if (!intersects(pageViewport, width, height, buffer + 40) || doc.width < 80 ||
+        doc.height < 25 || doc.height > height * 2.2) continue;
     if (element.closest?.('#owner-seasonal-snow, .house-gallery-lightbox')) continue;
     let radius = 0;
     try {
       const style = typeof window !== 'undefined' ? window.getComputedStyle?.(element) : null;
+      if (style?.position === 'fixed' || style?.position === 'sticky') continue;
       radius = parseFloat(style?.borderTopLeftRadius) || 0;
     } catch {}
-    const inset = clamp(Math.max(6, radius * 0.32), 6, Math.min(32, rect.width * 0.1));
-    const left = Math.max(0, rect.left + inset);
-    const right = Math.min(width, rect.right - inset);
-    if (right - left < 50 || rect.top < -buffer - 36 || rect.top > height + buffer + 36) continue;
-    surfaces.push({ element, left, right, top: pageY + rect.top + 1 });
+    const inset = clamp(Math.max(6, radius * 0.32), 6, Math.min(32, doc.width * 0.1));
+    const left = Math.max(0, doc.left + inset);
+    const right = Math.min(width, doc.right - inset);
+    if (right - left < 50 || pageViewport.top < -buffer - 36 ||
+        pageViewport.top > height + buffer + 36) continue;
+    surfaces.push({ element, left, right, top: doc.top + 1 });
   }
 
   surfaces.sort((a, b) => a.top - b.top);
@@ -694,9 +733,10 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
     let bottom = viewHeight;
     for (const selector of ['main', 'footer']) {
       const element = document.querySelector?.(selector);
-      const rect = element?.getBoundingClientRect?.();
-      if (Number.isFinite(rect?.bottom)) {
-        bottom = Math.max(bottom, rect.bottom + position);
+      const rect = bounding(element);
+      const doc = stableDocumentRect(element, rect, position);
+      if (Number.isFinite(doc?.bottom)) {
+        bottom = Math.max(bottom, doc.bottom);
       }
     }
     if (bottom <= viewHeight + 1) {
