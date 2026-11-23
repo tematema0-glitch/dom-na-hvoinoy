@@ -373,6 +373,19 @@ export function shedSnowbanks(banks, pageTop, viewHeight, scrollDelta, chunks, c
 // A decorative tap is detected only within a real, sufficiently thick
 // snow-cap silhouette. The canvas itself stays pointer-events:none, so normal
 // links, booking buttons, scrolling and forms keep all native interactions.
+// Deliberate stationary tap only. Swipes, long holds and multi-touch must not
+// interfere with native scrolling or the site's buttons and booking forms.
+export function isSnowTapGesture(start, finish, pageScroll, time) {
+  if (!start || !finish || !Number.isFinite(start.x) ||
+      !Number.isFinite(start.y) || !Number.isFinite(start.time) ||
+      !Number.isFinite(start.scroll) || !Number.isFinite(finish.x) ||
+      !Number.isFinite(finish.y) || !Number.isFinite(pageScroll) ||
+      !Number.isFinite(time) || time < start.time || time - start.time > 520) return false;
+  if (finish.id !== start.id) return false;
+  if (Math.hypot(finish.x - start.x, finish.y - start.y) > 12) return false;
+  return Math.abs(pageScroll - start.scroll) < 4;
+}
+
 export function burstSnowbankAt(banks, x, pageY, chunks, crumbs) {
   if (!Array.isArray(banks) || !Array.isArray(chunks) ||
       !Array.isArray(crumbs) || !Number.isFinite(x) ||
@@ -821,8 +834,50 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   const fps = 32; // Only snow FALLING updates at 32 fps; scroll never waits.
   const clock = () => window.performance?.now?.() ?? Date.now();
   let scrollMotion = null;
+  let tapStart = null;
+
+  const onPointerDown = event => {
+    if (removed || !collide || !settings.interaction || document.hidden ||
+        event.isPrimary === false || event.button !== 0 ||
+        !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) {
+      tapStart = null;
+      return;
+    }
+    tapStart = {
+      id: event.pointerId, x: event.clientX, y: event.clientY,
+      time: clock(), scroll: viewportTop()
+    };
+  };
+
+  const onPointerMove = event => {
+    if (!tapStart || tapStart.id !== event.pointerId) return;
+    if (Math.hypot(event.clientX - tapStart.x, event.clientY - tapStart.y) > 12) {
+      tapStart = null;
+    }
+  };
+
+  const onPointerUp = event => {
+    const start = tapStart;
+    tapStart = null;
+    if (removed || !collide || !settings.interaction || document.hidden ||
+        !isSnowTapGesture(start, {
+          id: event.pointerId, x: event.clientX, y: event.clientY
+        }, viewportTop(), clock())) return;
+    // Re-read the snowbank positions if layout changed since the last frame.
+    // Pointer position is in page CSS coordinates, exactly like the tiles.
+    syncScene(clock());
+    burstSnowbankAt(
+      activeBanks, event.clientX, event.clientY + viewportTop(), chunks, crumbs
+    );
+    // Never call preventDefault, stopPropagation or change pointer capture.
+    // The original underlying button/link receives its normal click.
+  };
+
+  const onPointerCancel = () => { tapStart = null; };
+
   const onScroll = () => {
     if (removed) return;
+    tapStart = null; // Scrolling must never be interpreted as tapping a snowbank.
     sceneDirty = true;
     syncTiles();
     const movement = classifySnowScroll(scrollMotion, viewportTop(), clock());
@@ -836,6 +891,7 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   };
   const onResize = () => {
     if (removed) return;
+    tapStart = null;
     resize();
     // Safari's disappearing address bar must not trigger a fake shake.
     scrollMotion = classifySnowScroll(null, viewportTop(), clock()).state;
@@ -1189,6 +1245,11 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
 
   window.addEventListener('resize', onResize, { passive: true });
   window.addEventListener('scroll', onScroll, { passive: true });
+  // Only observe pointer events. The decorative canvas never catches clicks.
+  document.addEventListener?.('pointerdown', onPointerDown, { capture: true, passive: true });
+  document.addEventListener?.('pointermove', onPointerMove, { capture: true, passive: true });
+  document.addEventListener?.('pointerup', onPointerUp, { capture: true, passive: true });
+  document.addEventListener?.('pointercancel', onPointerCancel, { capture: true, passive: true });
   resize();
   scrollMotion = classifySnowScroll(null, viewportTop(), clock()).state;
   if (!reduceMotion) frame = requestAnimationFrame(tick);
@@ -1199,6 +1260,11 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('scroll', onScroll);
+      document.removeEventListener?.('pointerdown', onPointerDown, true);
+      document.removeEventListener?.('pointermove', onPointerMove, true);
+      document.removeEventListener?.('pointerup', onPointerUp, true);
+      document.removeEventListener?.('pointercancel', onPointerCancel, true);
+      tapStart = null;
       for (const tile of layers) tile.canvas.remove();
       layers.length = 0;
       flakes = [];
