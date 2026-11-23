@@ -109,6 +109,15 @@ test('tiles stay at document positions during scrolling without rerender or JS f
     assert.equal(tile.style.top, tileTop);
     assert.equal(drawCount, oldDraw);
 
+    // iOS collapses its address bar while scrolling. Tile dimensions must
+    // stay stable; otherwise all snow visibly jumps during each resize.
+    const tilePixelHeight = tile.height;
+    win.innerHeight = 850;
+    listeners.get('resize')?.();
+    assert.equal(tile.style.top, tileTop);
+    assert.equal(tile.height, tilePixelHeight);
+    assert.equal(root.style.height, '9000px');
+
     for (let n = 1; n <= 1200; n++) {
       const frame = frames.entries().next().value;
       assert.ok(frame, 'RAF remains scheduled');
