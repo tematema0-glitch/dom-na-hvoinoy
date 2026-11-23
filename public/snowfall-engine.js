@@ -127,27 +127,27 @@ function intersects(rect, width, height, margin = 0) {
 
 // Exported independently for tests. The photo mask is deliberately broader
 // than snowbank targets: EVERY image is kept free of falling snow.
-export function measureSnowScene(root, width, height) {
+export function measureSnowScene(root, width, height, pageY = 0, buffer = 0) {
   const query = selector => Array.from(root.querySelectorAll?.(selector) || []);
   const masks = [];
   const surfaces = [];
 
   for (const element of query('img, video')) {
     const rect = bounding(element);
-    if (!intersects(rect, width, height, 4) || rect.width < 12 || rect.height < 12) continue;
+    if (!intersects(rect, width, height, buffer + 4) || rect.width < 12 || rect.height < 12) continue;
     // The 1px bleed prevents antialiasing from drawing flakes over a photo.
     masks.push({
       left: Math.max(0, rect.left - 1),
-      top: Math.max(0, rect.top - 1),
+      top: pageY + Math.max(-buffer, rect.top - 1),
       right: Math.min(width, rect.right + 1),
-      bottom: Math.min(height, rect.bottom + 1)
+      bottom: pageY + Math.min(height + buffer, rect.bottom + 1)
     });
   }
 
   for (const element of query(SNOWBANK_SURFACE_SELECTOR)) {
     if (surfaces.length >= 24) break;
     const rect = bounding(element);
-    if (!intersects(rect, width, height, 40) || rect.width < 80 ||
+    if (!intersects(rect, width, height, buffer + 40) || rect.width < 80 ||
         rect.height < 25 || rect.height > height * 2.2) continue;
     if (element.closest?.('#owner-seasonal-snow, .house-gallery-lightbox')) continue;
     let radius = 0;
@@ -158,8 +158,8 @@ export function measureSnowScene(root, width, height) {
     const inset = clamp(Math.max(6, radius * 0.32), 6, Math.min(32, rect.width * 0.1));
     const left = Math.max(0, rect.left + inset);
     const right = Math.min(width, rect.right - inset);
-    if (right - left < 50 || rect.top < -36 || rect.top > height + 36) continue;
-    surfaces.push({ element, left, right, top: rect.top + 1 });
+    if (right - left < 50 || rect.top < -buffer - 36 || rect.top > height + buffer + 36) continue;
+    surfaces.push({ element, left, right, top: pageY + rect.top + 1 });
   }
 
   surfaces.sort((a, b) => a.top - b.top);
@@ -304,10 +304,10 @@ function paintChunk(ctx, chunk) {
   ctx.restore();
 }
 
-function photoClip(ctx, masks, width, height) {
+function photoClip(ctx, masks, width, height, originY = 0) {
   if (!masks.length || typeof ctx.clip !== 'function') return false;
   ctx.beginPath();
-  ctx.rect(0, 0, width, height);
+  ctx.rect(0, originY, width, height);
   for (const r of masks) {
     if (r.right > r.left && r.bottom > r.top) {
       ctx.rect(r.left, r.top, r.right - r.left, r.bottom - r.top);
