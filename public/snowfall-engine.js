@@ -863,12 +863,19 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
         !isSnowTapGesture(start, {
           id: event.pointerId, x: event.clientX, y: event.clientY
         }, viewportTop(), clock())) return;
+    // Most taps are ordinary UI interactions. Avoid a DOM geometry scan
+    // unless the pointer was actually near a currently drawn snowcap.
+    const pageY = event.clientY + viewportTop();
+    const nearSnow = activeBanks.some(bank => {
+      const g = bank?.geometry;
+      return g && event.clientX >= g.left && event.clientX <= g.right &&
+        pageY >= g.top - 54 && pageY <= g.top + 11;
+    });
+    if (!nearSnow) return;
     // Re-read the snowbank positions if layout changed since the last frame.
     // Pointer position is in page CSS coordinates, exactly like the tiles.
     syncScene(clock());
-    burstSnowbankAt(
-      activeBanks, event.clientX, event.clientY + viewportTop(), chunks, crumbs
-    );
+    burstSnowbankAt(activeBanks, event.clientX, pageY, chunks, crumbs);
     // Never call preventDefault, stopPropagation or change pointer capture.
     // The original underlying button/link receives its normal click.
   };
