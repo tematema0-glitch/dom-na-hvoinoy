@@ -370,6 +370,70 @@ export function shedSnowbanks(banks, pageTop, viewHeight, scrollDelta, chunks, c
   return affected;
 }
 
+// A decorative tap is detected only within a real, sufficiently thick
+// snow-cap silhouette. The canvas itself stays pointer-events:none, so normal
+// links, booking buttons, scrolling and forms keep all native interactions.
+export function burstSnowbankAt(banks, x, pageY, chunks, crumbs) {
+  if (!Array.isArray(banks) || !Array.isArray(chunks) ||
+      !Array.isArray(crumbs) || !Number.isFinite(x) ||
+      !Number.isFinite(pageY)) return false;
+
+  for (const bank of banks) {
+    const g = bank?.geometry;
+    if (!g || !bank.depths?.length || g.right <= g.left ||
+        x < g.left || x > g.right) continue;
+    const depth = bankDepth(bank, x);
+    const peak = Math.max(...bank.depths);
+    // Require visibly accumulated snow. A small finger-sized margin makes
+    // the thin white ledge tappable on mobile without covering whole buttons.
+    if (peak < 10 || depth < 7 ||
+        pageY < g.top - depth - 12 || pageY > g.top + 10) continue;
+
+    const previous = Array.from(bank.depths);
+    const strength = clamp(peak / 22, 0.65, 1.7);
+    // Remove most (not every pixel) of this one bank. Natural snowfall
+    // immediately begins building it back up after the touch.
+    for (let i = 0; i < bank.depths.length; i++) {
+      bank.depths[i] = previous[i] * 0.1;
+    }
+    bank.cooldown = Math.max(2.0, bank.cooldown || 0);
+
+    const reach = Math.min((g.right - g.left) * 0.43, 62);
+    const chunkCount = clamp(Math.round(peak / 5), 3, 7);
+    for (let i = 0; i < chunkCount && chunks.length < MAX_CHUNKS; i++) {
+      const px = clamp(x + random(-reach, reach), g.left + 2, g.right - 2);
+      const fraction = (px - g.left) / (g.right - g.left);
+      const index = clamp(Math.round(fraction * (previous.length - 1)), 0, previous.length - 1);
+      const snow = previous[index];
+      if (snow < 3) continue;
+      chunks.push({
+        x: px, y: g.top - snow,
+        radius: clamp(random(2.2, 5.1) * strength, 2.3, 9),
+        vx: (px - x) * random(1.0, 1.8) + random(-55, 55),
+        vy: -random(35, 120) * strength,
+        bank, onEdge: false, age: 0, debrisAt: 0
+      });
+    }
+
+    for (let i = 0; i < 16 && crumbs.length < MAX_CRUMBS; i++) {
+      const px = clamp(x + random(-reach, reach), g.left + 1, g.right - 1);
+      const fraction = (px - g.left) / (g.right - g.left);
+      const index = clamp(Math.round(fraction * (previous.length - 1)), 0, previous.length - 1);
+      const snow = previous[index];
+      if (snow < 1.4) continue;
+      crumbs.push({
+        x: px, y: g.top - snow + random(-3, 2),
+        vx: (px - x) * random(0.8, 2.1) + random(-65, 65),
+        vy: -random(32, 155) * strength,
+        radius: random(0.8, clamp(snow * 0.24, 1.5, 3.8)),
+        life: random(0.8, 1.65)
+      });
+    }
+    return true;
+  }
+  return false;
+}
+
 function drawBank(ctx, bank) {
   const g = bank.geometry;
   const peak = Math.max(...bank.depths);
