@@ -630,11 +630,11 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   const reduceMotion = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const collide = options.collide === true;
   const TILE_HEIGHT = 768; // Stable across Safari address-bar collapse/expansion.
-  const POOL_SIZE = 9; // >3 screens of native-scroll coverage in either direction.
+  const POOL_SIZE = 7; // 2-3 screens of compositor-owned coverage around viewport.
   const MAX_CRUMB_COUNT = 48;
   const layers = [];
   let settings = { ...DEFAULT_SNOWFALL_SETTINGS, ...initialSettings };
-  let width = 1, viewHeight = 1, pixelRatio = 1;
+  let width = 1, viewHeight = 1, pixelRatio = 1, pageHeight = 1;
   let flakes = [], chunks = [], crumbs = [], photoMasks = [], activeBanks = [];
   let bankStore = new WeakMap();
   let frame = 0, previousTime = 0, lastScan = 0, removed = false, sceneDirty = true;
@@ -654,7 +654,7 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   // Existing visible tiles retain both their DOM position and painted bitmap
   // while new far-offscreen tiles are recycled.
   function syncTiles() {
-    const first = Math.max(0, Math.floor(viewportTop() / TILE_HEIGHT) - 3);
+    const first = Math.max(0, Math.floor(viewportTop() / TILE_HEIGHT) - 2);
     const wanted = new Set();
     for (let i = 0; i < POOL_SIZE; i++) wanted.add(first + i);
     for (const index of wanted) {
@@ -687,6 +687,26 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
     while (flakes.length > target) flakes.pop();
   }
 
+  // Absolutely positioned canvases must NOT increase the site's scroll height.
+  // Measure real page content, then clip the decorative root to its bottom.
+  function updatePageBounds() {
+    const position = viewportTop();
+    let bottom = viewHeight;
+    for (const selector of ['main', 'footer']) {
+      const element = document.querySelector?.(selector);
+      const rect = element?.getBoundingClientRect?.();
+      if (Number.isFinite(rect?.bottom)) {
+        bottom = Math.max(bottom, rect.bottom + position);
+      }
+    }
+    if (bottom <= viewHeight + 1) {
+      // Safe fallback on unexpected pages. Ignore the decorative root itself.
+      bottom = Math.max(bottom, document.body?.offsetHeight || 0);
+    }
+    pageHeight = Math.ceil(bottom);
+    root.style.height = pageHeight + 'px';
+  }
+
   function resize() {
     const docWidth = document.documentElement?.clientWidth || window.innerWidth || 375;
     const nextWidth = Math.max(1, Math.round(Math.min(window.innerWidth || docWidth, docWidth + 2)));
@@ -705,6 +725,7 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
       }
     }
     sceneDirty = true;
+    updatePageBounds();
     syncFlakes();
     syncTiles();
   }
@@ -731,7 +752,9 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
     if (!sceneDirty && time - lastScan < 550) return;
     const pageTop = viewportTop();
     // Mask every visible/soon-visible photo, even those that do NOT collect snow.
-    const scene = measureSnowScene(document, width, viewHeight, pageTop, 3 * viewHeight);
+    updatePageBounds();
+    // Always mask the entire document, including photos below the next swipe.
+    const scene = measureSnowScene(document, width, viewHeight, pageTop, pageHeight + viewHeight);
     photoMasks = scene.masks;
     activeBanks = [];
     if (collide && settings.interaction) {
@@ -923,7 +946,7 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
     const lastVisible = Math.floor((viewportTop() + viewHeight) / TILE_HEIGHT);
     // A native-scroll safety buffer stays painted before the user swipes.
     for (const tile of layers) {
-      if (tile.index >= firstVisible - 2 && tile.index <= lastVisible + 2) {
+      if (!tile.ready || (tile.index >= firstVisible - 2 && tile.index <= lastVisible + 2)) {
         drawTile(tile);
       }
     }
