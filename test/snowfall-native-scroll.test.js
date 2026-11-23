@@ -60,12 +60,14 @@ test('tiles stay at document positions during scrolling without rerender or JS f
       arc() {}, fill() {}, stroke() {},
       createLinearGradient() { return { addColorStop() {} }; }
     });
-    const root = { children: [], append(node) { this.children.push(node); } };
+    const root = { style: {}, children: [], append(node) { this.children.push(node); } };
     globalThis.window = win;
     globalThis.document = {
       hidden: false,
       documentElement: { clientWidth: 390, clientHeight: 800 },
-      querySelector: () => null,
+      querySelector: selector => selector === 'main'
+        ? { getBoundingClientRect: () => ({ bottom: 9000 - win.scrollY }) }
+        : null,
       querySelectorAll(selector) {
         if (selector === 'img, video') return [photo];
         if (selector.includes('.hero-book')) return [button];
@@ -91,6 +93,7 @@ test('tiles stay at document positions during scrolling without rerender or JS f
       ...DEFAULT_SNOWFALL_SETTINGS, enabled: true, count: 120, speed: 2.4
     }, { collide: true });
     assert.ok(canvases.length >= 6);
+    assert.equal(root.style.height, '9000px', 'snow tiles cannot expand the page scroll length');
     assert.equal(canvases.every(c => c.style.position === 'absolute'), true);
     assert.equal(canvases.some(c => c.style.position === 'fixed'), false);
     const positions = () => canvases.map(c => c.style.top);
