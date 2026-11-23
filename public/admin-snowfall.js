@@ -93,7 +93,7 @@ function setup(panel) {
   left.append(
     el('p', 'snow-admin-eyebrow', 'СЕЗОННОЕ ОФОРМЛЕНИЕ'),
     el('h2', '', '❄ Снег на сайте'),
-    el('p', 'snow-admin-desc', 'Лёгкий снегопад над страницей. Снежинки не мешают нажимать кнопки, оформлять бронирования и листать календарь.')
+    el('p', 'snow-admin-desc', 'Снежинки движутся вместе с прокруткой, не закрывают фотографии и постепенно собираются в сугробы на верхних краях объектов. Кнопки и бронирование работают как прежде.')
   );
   const switcher = el('label', 'snow-admin-switch');
   const enabled = el('input');
@@ -128,7 +128,7 @@ function setup(panel) {
   const edgeLabel = el('label');
   const interaction = el('input');
   interaction.type = 'checkbox';
-  edgeLabel.append(interaction, document.createTextNode('Скатывание снежинок с верхних краёв фотографий'));
+  edgeLabel.append(interaction, document.createTextNode('Сугробы на верхних кромках кнопок и фотографий, со сходом снега'));
   checks.append(tiltLabel, edgeLabel);
   controls.append(checks);
 
@@ -140,7 +140,7 @@ function setup(panel) {
   preview.append(el('span', 'snow-admin-preview-title', 'Новый год на Хвойной'));
   previewWrap.append(
     preview,
-    el('p', 'snow-admin-note', 'Предпросмотр работает даже при выключенном снеге на сайте. Скольжение происходит только на некоторых фотографиях.')
+    el('p', 'snow-admin-note', 'Предпросмотр показывает снежинки. На сайте сугробы медленно растут на кромках объектов, а затем частично осыпаются. Фотографии остаются чистыми.')
   );
   layout.append(controls, previewWrap);
 

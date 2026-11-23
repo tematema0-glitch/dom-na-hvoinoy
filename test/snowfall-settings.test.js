@@ -8,7 +8,10 @@ import {
 import {
   gravityFromOrientation,
   windFromOrientation,
-  createSnowfallStage
+  createSnowfallStage,
+  measureSnowScene,
+  scrolledSnowY,
+  SNOWBANK_SURFACE_SELECTOR
 } from '../public/snowfall-engine.js';
 
 test('snowfall is disabled on first deploy and does not require migrations', () => {
@@ -96,7 +99,8 @@ test('canvas effect is self-contained and cleans up resize/scroll listeners', ()
     const ctx = {
       setTransform() {}, clearRect() { drawCount++; },
       beginPath() {}, arc() {}, fill() {}, stroke() {},
-      moveTo() {}, lineTo() {}, closePath() {}
+      moveTo() {}, lineTo() {}, closePath() {},
+      save() {}, restore() {}, rect() {}, clip() {}, quadraticCurveTo() {}
     };
     const canvas = {
       width: 0, height: 0,
@@ -124,5 +128,50 @@ test('canvas effect is self-contained and cleans up resize/scroll listeners', ()
       if (value === undefined) delete globalThis[key];
       else globalThis[key] = value;
     }
+  }
+});
+
+test('scrolling moves flakes with the page, including long upward swipes', () => {
+  assert.equal(scrolledSnowY(210, 60, 400), 150);
+  assert.equal(scrolledSnowY(25, 80, 400), 405); // Re-enter from bottom after exiting above the top.
+  assert.equal(scrolledSnowY(12, -80, 400), 92);
+  const wrapped = scrolledSnowY(100, 1180, 400);
+  assert.ok(wrapped >= -30 && wrapped <= 430);
+  assert.equal(scrolledSnowY(100, NaN, 400), 100);
+});
+
+test('every photo is masked, while only chosen ledges gather snow', () => {
+  const element = (left, top, width, height, radii = '18px') => ({
+    getBoundingClientRect() {
+      return { left, top, width, height, right: left + width, bottom: top + height };
+    },
+    closest() { return null; },
+    radii
+  });
+  const photo1 = element(20, 210, 280, 180);
+  const photo2 = element(320, 110, 200, 185);
+  const button = element(30, 90, 300, 58);
+  const gallery = element(35, 205, 270, 180);
+  const noSnow = element(50, 30, 45, 15);
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === 'img, video') return [photo1, photo2];
+      if (selector === SNOWBANK_SURFACE_SELECTOR) return [button, gallery, noSnow];
+      return [];
+    }
+  };
+  const savedWindow = globalThis.window;
+  try {
+    globalThis.window = { getComputedStyle: el => ({ borderTopLeftRadius: el.radii }) };
+    const scene = measureSnowScene(root, 430, 500);
+    assert.equal(scene.masks.length, 2);
+    assert.equal(scene.surfaces.length, 2);
+    assert.equal(scene.surfaces[0].top, 91);
+    assert.equal(scene.masks[0].left, 19);
+    assert.ok(scene.surfaces[1].top > scene.surfaces[0].top);
+    assert.ok(scene.masks[1].right <= 430);
+  } finally {
+    if (savedWindow === undefined) delete globalThis.window;
+    else globalThis.window = savedWindow;
   }
 });
