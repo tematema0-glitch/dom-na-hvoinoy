@@ -104,7 +104,7 @@ test('the document snow layer observes pointers without stealing clicks or scrol
     };
     const ctx = () => ({
       setTransform() {}, clearRect() {}, save() {}, restore() {},
-      beginPath() {}, rect() {}, clip() {}, lineTo() {}, moveTo() {},
+      beginPath() {}, closePath() {}, rect() {}, clip() {}, lineTo() {}, moveTo() {},
       quadraticCurveTo(a, b, c, d) { topmostSnow = Math.min(topmostSnow, d); },
       arc() {}, fill() {}, stroke() {},
       createLinearGradient() { return { addColorStop() {} }; }
