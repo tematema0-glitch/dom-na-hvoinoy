@@ -133,7 +133,7 @@ test('canvas effect is self-contained and cleans up resize/scroll listeners', ()
 
 test('scrolling moves flakes with the page, including long upward swipes', () => {
   assert.equal(scrolledSnowY(210, 60, 400), 150);
-  assert.equal(scrolledSnowY(25, 80, 400), -25);
+  assert.equal(scrolledSnowY(25, 80, 400), 405); // Re-enter from bottom after exiting above the top.
   assert.equal(scrolledSnowY(12, -80, 400), 92);
   const wrapped = scrolledSnowY(100, 1180, 400);
   assert.ok(wrapped >= -30 && wrapped <= 430);
