@@ -128,7 +128,7 @@ function apply(next) {
     layer.setAttribute('aria-hidden', 'true');
     Object.assign(layer.style, {
       position: 'absolute', top: '0', left: '0', width: '100%',
-      height: '0', overflow: 'visible', pointerEvents: 'none',
+      height: '0', overflow: 'hidden', pointerEvents: 'none',
       zIndex: '35'
     });
     document.body.append(layer);
