@@ -1,5 +1,5 @@
 import { normalizeSnowfallSettings } from './snowfall-config.js';
-import { createSnowfallStage, gravityFromOrientation } from './snowfall-engine.js';
+import { createDocumentSnowfallStage, gravityFromOrientation } from './snowfall-engine.js';
 
 // Public seasonal effect. If the settings API is unavailable, nothing is shown.
 // Never intercept booking, calendar, or navigation events.
@@ -115,18 +115,25 @@ function apply(next) {
     return;
   }
 
-  let canvas = document.getElementById(OVERLAY_ID);
-  if (!canvas) {
-    canvas = document.createElement('canvas');
-    canvas.id = OVERLAY_ID;
-    canvas.setAttribute('aria-hidden', 'true');
-    Object.assign(canvas.style, {
-      position: 'fixed', inset: '0', width: '100vw', height: '100vh',
-      pointerEvents: 'none', zIndex: '35', contain: 'strict'
-    });
-    document.body.append(canvas);
+  // Document-anchored container: the browser scrolls its canvases together
+  // with the page in the compositor, with zero JS scroll-following delay.
+  let layer = document.getElementById(OVERLAY_ID);
+  if (layer && layer.tagName !== 'DIV') {
+    layer.remove();
+    layer = null;
   }
-  if (!stage) stage = createSnowfallStage(canvas, settings, { collide: true });
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = OVERLAY_ID;
+    layer.setAttribute('aria-hidden', 'true');
+    Object.assign(layer.style, {
+      position: 'absolute', top: '0', left: '0', width: '100%',
+      height: '0', overflow: 'visible', pointerEvents: 'none',
+      zIndex: '35'
+    });
+    document.body.append(layer);
+  }
+  if (!stage) stage = createDocumentSnowfallStage(layer, settings, { collide: true });
   else stage.update(settings);
 
   stopOrientation();
