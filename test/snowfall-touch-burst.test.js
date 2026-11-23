@@ -83,7 +83,7 @@ test('the document snow layer observes pointers without stealing clicks or scrol
   const names = ['window', 'document', 'ResizeObserver', 'requestAnimationFrame', 'cancelAnimationFrame'];
   const originals = new Map(names.map(name => [name, globalThis[name]]));
   const windowEvents = new Map(), documentEvents = new Map(), frames = new Map();
-  let nextFrame = 0, clickTargetCalls = 0, scrollPosition = 0;
+  let nextFrame = 0, clickTargetCalls = 0, scrollPosition = 0, topmostSnow = Infinity;
   try {
     globalThis.window = {
       get scrollY() { return scrollPosition; },
@@ -105,7 +105,8 @@ test('the document snow layer observes pointers without stealing clicks or scrol
     const ctx = () => ({
       setTransform() {}, clearRect() {}, save() {}, restore() {},
       beginPath() {}, rect() {}, clip() {}, lineTo() {}, moveTo() {},
-      quadraticCurveTo() {}, arc() {}, fill() {}, stroke() {},
+      quadraticCurveTo(a, b, c, d) { topmostSnow = Math.min(topmostSnow, d); },
+      arc() {}, fill() {}, stroke() {},
       createLinearGradient() { return { addColorStop() {} }; }
     });
     const layer = { style: {}, children: [], append(canvas) { this.children.push(canvas); } };
@@ -151,10 +152,27 @@ test('the document snow layer observes pointers without stealing clicks or scrol
       preventDefault() { assert.fail('must never cancel the click'); },
       stopPropagation() { assert.fail('must never stop event propagation'); }
     });
+    // Grow a real snowcap in the simulated Canvas stage, then check its
+    // rendered silhouette jumps downward when we break it with a finger.
+    for (let n = 1; n <= 320; n++) {
+      const scheduled = frames.entries().next().value;
+      assert.ok(scheduled, 'animation should keep running');
+      frames.delete(scheduled[0]);
+      scheduled[1](n * 38);
+    }
+    const beforeTouch = topmostSnow;
+    assert.ok(beforeTouch < 409, 'snow should build up above the button');
+
     documentEvents.get('pointerdown')(tapEvent(180, 416));
     documentEvents.get('pointerup')(tapEvent(180, 416));
     clickTargetCalls++; // Native site handlers would proceed unmodified.
     assert.equal(clickTargetCalls, 1);
+
+    topmostSnow = Infinity;
+    const next = frames.entries().next().value;
+    frames.delete(next[0]);
+    next[1](321 * 38);
+    assert.ok(topmostSnow > beforeTouch + 8, 'the tapped snowcap visibly collapses');
 
     // A drag is rejected and a fast page scroll cancels any pending tap.
     documentEvents.get('pointerdown')(tapEvent(180, 416));
