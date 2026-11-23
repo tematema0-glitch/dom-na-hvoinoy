@@ -163,6 +163,11 @@ window.addEventListener('pagehide', () => {
   stage?.destroy();
   stage = null;
 });
+window.addEventListener('pageshow', event => {
+  if (event.persisted && settings) {
+    try { apply(settings); } catch {}
+  }
+});
 if (reducedMotion) {
   const update = () => {
     if (settings) {
