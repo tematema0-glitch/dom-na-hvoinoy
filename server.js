@@ -1,5 +1,6 @@
 import express from 'express';
 import { handlePricingAction } from './pricing-updates.js';
+import { DEFAULT_SNOWFALL_SETTINGS, normalizeSnowfallSettings } from './public/snowfall-config.js';
 import { saveBirthdayRecord, deleteBirthdayRecord } from './birthday-clients.js';
 import { applyAvailabilityChange } from './calendar-availability.js';
 import { notifyYandexOnSeoChange } from './indexnow-seo.js';
@@ -211,6 +212,43 @@ app.post('/api/admin/birthdays',async(req,res,next)=>{
   }
   res.status(400).json({error:'Неизвестное действие.'});
  }catch(error){next(error);}
+});
+// Seasonal settings default to OFF, without affecting booking or pricing APIs.
+app.get('/api/snowfall',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ try{
+  const found=await pool.query("SELECT value FROM settings WHERE key='seasonal:snowfall'");
+  let settings=DEFAULT_SNOWFALL_SETTINGS;
+  if(found.rowCount){
+   try{settings=normalizeSnowfallSettings(found.rows[0].value);}
+   catch{console.warn('Invalid snowfall settings; using disabled defaults');}
+  }
+  return res.json({settings});
+ }catch(error){
+  console.error('Snowfall settings unavailable',error.code||error.name);
+  return res.json({settings:DEFAULT_SNOWFALL_SETTINGS});
+ }
+});
+app.post('/api/admin/snowfall',async(req,res)=>{
+ if(!requireAdmin(req,res))return;
+ if(req.get('X-Requested-With')!=='XMLHttpRequest'||!req.is('application/json'))
+  return res.status(403).json({error:'Запрос запрещён.'});
+ const origin=req.get('Origin');
+ if(origin){
+  try{if(new URL(origin).host!==req.get('host'))return res.status(403).json({error:'Недопустимый источник запроса.'});}
+  catch{return res.status(403).json({error:'Недопустимый источник запроса.'});}
+ }
+ let settings;
+ try{settings=normalizeSnowfallSettings(req.body?.settings);}
+ catch(error){return res.status(400).json({error:error.message||'Некорректные настройки снега.'});}
+ try{
+  await pool.query("INSERT INTO settings(key,value) VALUES('seasonal:snowfall',$1::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()",[JSON.stringify(settings)]);
+  res.setHeader('Cache-Control','no-store');
+  return res.json({ok:true,settings});
+ }catch(error){
+  console.error('Snowfall settings save failed',error.code||error.name);
+  return res.status(503).json({error:'Не удалось сохранить снегопад. Настройки не изменены.'});
+ }
 });
 app.get('/api/pricing', async(req,res)=>res.json(await pricing()));
 app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false UNION SELECT date::text AS arrival,(date+1)::text AS departure FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL UNION SELECT arrival::text,departure::text FROM avito_calendar_blocks ORDER BY arrival`); res.setHeader('Cache-Control','no-store'); res.json({ranges:q.rows}); });
@@ -509,7 +547,7 @@ app.get('/',async(req,res,next)=>{try{
  // Replacing them here previously discarded SEO updates at request time.
  const styles=['<link rel="stylesheet" href="/booking-payment-info.css">'].filter(style=>!html.includes(style)).join('');
  if(styles)html=html.replace(/<\/head>/i,`${styles}</head>`);
- const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/admin-income-dashboard.js"></script>','<script type="module" src="/admin-birthdays.js"></script>','<script type="module" src="/booking-payment-info.js"></script>','<script defer src="/seo-analytics.js"></script>'].filter(script=>!html.includes(script)).join('');
+ const scripts=['<script type="module" src="/house-gallery.js"></script>','<script type="module" src="/guest-cabinet.js"></script>','<script type="module" src="/admin-enhancements.js"></script>','<script type="module" src="/admin-price-calendar.js"></script>','<script type="module" src="/admin-availability-calendar.js"></script>','<script type="module" src="/admin-income-dashboard.js"></script>','<script type="module" src="/admin-birthdays.js"></script>','<script type="module" src="/snowfall.js"></script>','<script type="module" src="/admin-snowfall.js"></script>','<script type="module" src="/booking-payment-info.js"></script>','<script defer src="/seo-analytics.js"></script>'].filter(script=>!html.includes(script)).join('');
  if(scripts)html=html.replace(/<\/body>/i,`${scripts}</body>`);
  res.setHeader('Cache-Control','no-store');
  res.type('html').send(html);
