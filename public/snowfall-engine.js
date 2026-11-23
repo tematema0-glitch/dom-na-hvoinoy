@@ -127,27 +127,27 @@ function intersects(rect, width, height, margin = 0) {
 
 // Exported independently for tests. The photo mask is deliberately broader
 // than snowbank targets: EVERY image is kept free of falling snow.
-export function measureSnowScene(root, width, height) {
+export function measureSnowScene(root, width, height, pageY = 0, buffer = 0) {
   const query = selector => Array.from(root.querySelectorAll?.(selector) || []);
   const masks = [];
   const surfaces = [];
 
   for (const element of query('img, video')) {
     const rect = bounding(element);
-    if (!intersects(rect, width, height, 4) || rect.width < 12 || rect.height < 12) continue;
+    if (!intersects(rect, width, height, buffer + 4) || rect.width < 12 || rect.height < 12) continue;
     // The 1px bleed prevents antialiasing from drawing flakes over a photo.
     masks.push({
       left: Math.max(0, rect.left - 1),
-      top: Math.max(0, rect.top - 1),
+      top: pageY + Math.max(-buffer, rect.top - 1),
       right: Math.min(width, rect.right + 1),
-      bottom: Math.min(height, rect.bottom + 1)
+      bottom: pageY + Math.min(height + buffer, rect.bottom + 1)
     });
   }
 
   for (const element of query(SNOWBANK_SURFACE_SELECTOR)) {
     if (surfaces.length >= 24) break;
     const rect = bounding(element);
-    if (!intersects(rect, width, height, 40) || rect.width < 80 ||
+    if (!intersects(rect, width, height, buffer + 40) || rect.width < 80 ||
         rect.height < 25 || rect.height > height * 2.2) continue;
     if (element.closest?.('#owner-seasonal-snow, .house-gallery-lightbox')) continue;
     let radius = 0;
@@ -158,8 +158,8 @@ export function measureSnowScene(root, width, height) {
     const inset = clamp(Math.max(6, radius * 0.32), 6, Math.min(32, rect.width * 0.1));
     const left = Math.max(0, rect.left + inset);
     const right = Math.min(width, rect.right - inset);
-    if (right - left < 50 || rect.top < -36 || rect.top > height + 36) continue;
-    surfaces.push({ element, left, right, top: rect.top + 1 });
+    if (right - left < 50 || rect.top < -buffer - 36 || rect.top > height + buffer + 36) continue;
+    surfaces.push({ element, left, right, top: pageY + rect.top + 1 });
   }
 
   surfaces.sort((a, b) => a.top - b.top);
@@ -304,10 +304,10 @@ function paintChunk(ctx, chunk) {
   ctx.restore();
 }
 
-function photoClip(ctx, masks, width, height) {
+function photoClip(ctx, masks, width, height, originY = 0) {
   if (!masks.length || typeof ctx.clip !== 'function') return false;
   ctx.beginPath();
-  ctx.rect(0, 0, width, height);
+  ctx.rect(0, originY, width, height);
   for (const r of masks) {
     if (r.right > r.left && r.bottom > r.top) {
       ctx.rect(r.left, r.top, r.right - r.left, r.bottom - r.top);
@@ -617,6 +617,395 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
       chunks = [];
       crumbs = [];
       ctx.clearRect(0, 0, width, height);
+    }
+  };
+}
+
+// The live site uses DOCUMENT-ANCHORED canvas tiles. Safari/Chrome composite
+// these exactly with ordinary page content during async/inertial scrolling.
+// No scroll event or animation frame is ever needed to move painted snow.
+export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOWFALL_SETTINGS, options = {}) {
+  const NOOP = { update() {}, setWind() {}, setGravity() {}, destroy() {} };
+  if (!root || typeof document === 'undefined' || typeof window === 'undefined') return NOOP;
+  const reduceMotion = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const collide = options.collide === true;
+  const TILE_HEIGHT = 768; // Stable across Safari address-bar collapse/expansion.
+  const POOL_SIZE = 7; // 2-3 screens of compositor-owned coverage around viewport.
+  const MAX_CRUMB_COUNT = 48;
+  const layers = [];
+  let settings = { ...DEFAULT_SNOWFALL_SETTINGS, ...initialSettings };
+  let width = 1, viewHeight = 1, pixelRatio = 1, pageHeight = 1;
+  let flakes = [], chunks = [], crumbs = [], photoMasks = [], activeBanks = [];
+  let bankStore = new WeakMap();
+  let frame = 0, previousTime = 0, lastScan = 0, removed = false, sceneDirty = true;
+  let gravity = { x: 0, y: 1 }, targetGravity = { x: 0, y: 1 };
+  const fps = 32; // Only snow FALLING updates at 32 fps; scroll never waits.
+  const onScroll = () => { if (!removed) { sceneDirty = true; syncTiles(); } };
+  const onResize = () => { if (!removed) resize(); };
+
+  const viewportTop = () => {
+    const y = Number.isFinite(window.scrollY) ? window.scrollY :
+      (Number.isFinite(window.pageYOffset) ? window.pageYOffset :
+        Number(document.documentElement?.scrollTop) || 0);
+    return Math.max(0, y);
+  };
+
+  // Canvas positions are document coordinates, not viewport coordinates.
+  // Existing visible tiles retain both their DOM position and painted bitmap
+  // while new far-offscreen tiles are recycled.
+  function syncTiles() {
+    const first = Math.max(0, Math.floor(viewportTop() / TILE_HEIGHT) - 2);
+    const wanted = new Set();
+    for (let i = 0; i < POOL_SIZE; i++) wanted.add(first + i);
+    for (const index of wanted) {
+      if (layers.some(item => item.index === index)) continue;
+      const available = layers.find(item => !wanted.has(item.index));
+      if (!available) continue;
+      available.index = index;
+      available.top = index * TILE_HEIGHT;
+      available.canvas.style.top = available.top + 'px';
+      available.canvas.style.visibility = 'hidden';
+      available.ready = false;
+    }
+  }
+
+  function countFlakes() {
+    const scale = clamp(Math.sqrt((width * viewHeight) / 850000), 0.45, 1.35);
+    return clamp(Math.round(settings.count * scale * 5), 50, width < 700 ? 320 : 460);
+  }
+
+  function newWorldFlake() {
+    const flake = makeFlake(width, viewHeight, settings, true);
+    const y = viewportTop();
+    flake.y = random(y - viewHeight * 1.4, y + viewHeight * 3.8);
+    return flake;
+  }
+
+  function syncFlakes() {
+    const target = countFlakes();
+    while (flakes.length < target) flakes.push(newWorldFlake());
+    while (flakes.length > target) flakes.pop();
+  }
+
+  // Absolutely positioned canvases must NOT increase the site's scroll height.
+  // Measure real page content, then clip the decorative root to its bottom.
+  function updatePageBounds() {
+    const position = viewportTop();
+    let bottom = viewHeight;
+    for (const selector of ['main', 'footer']) {
+      const element = document.querySelector?.(selector);
+      const rect = element?.getBoundingClientRect?.();
+      if (Number.isFinite(rect?.bottom)) {
+        bottom = Math.max(bottom, rect.bottom + position);
+      }
+    }
+    if (bottom <= viewHeight + 1) {
+      // Safe fallback on unexpected pages. Ignore the decorative root itself.
+      bottom = Math.max(bottom, document.body?.offsetHeight || 0);
+    }
+    pageHeight = Math.ceil(bottom);
+    root.style.height = pageHeight + 'px';
+  }
+
+  function resize() {
+    const docWidth = document.documentElement?.clientWidth || window.innerWidth || 375;
+    const nextWidth = Math.max(1, Math.round(Math.min(window.innerWidth || docWidth, docWidth + 2)));
+    const nextHeight = Math.max(1, Math.round(window.innerHeight || document.documentElement?.clientHeight || 700));
+    const nextRatio = clamp(window.devicePixelRatio || 1, 1, nextWidth < 700 ? 1.5 : 1.25);
+    const changed = nextWidth !== width || Math.abs(nextRatio - pixelRatio) > 0.01;
+    width = nextWidth;
+    viewHeight = nextHeight;
+    pixelRatio = nextRatio;
+    if (changed) {
+      for (const tile of layers) {
+        tile.canvas.style.width = width + 'px';
+        tile.canvas.width = Math.round(width * pixelRatio);
+        tile.canvas.height = Math.round(TILE_HEIGHT * pixelRatio);
+        tile.ready = false;
+      }
+    }
+    sceneDirty = true;
+    updatePageBounds();
+    syncFlakes();
+    syncTiles();
+  }
+
+  for (let i = 0; i < POOL_SIZE; i++) {
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute('aria-hidden', 'true');
+    Object.assign(canvas.style, {
+      position: 'absolute', left: '0', top: '0', width: '100%',
+      height: TILE_HEIGHT + 'px', pointerEvents: 'none',
+      visibility: 'hidden', display: 'block'
+    });
+    const ctx = canvas.getContext('2d', { alpha: true });
+    if (!ctx) {
+      canvas.remove();
+      for (const tile of layers) tile.canvas.remove();
+      return NOOP;
+    }
+    root.append(canvas);
+    layers.push({ canvas, ctx, index: -i - 1, top: 0, ready: false });
+  }
+
+  function syncScene(time) {
+    if (!sceneDirty && time - lastScan < 550) return;
+    const pageTop = viewportTop();
+    // Mask every visible/soon-visible photo, even those that do NOT collect snow.
+    updatePageBounds();
+    // Always mask the entire document, including photos below the next swipe.
+    const scene = measureSnowScene(document, width, viewHeight, pageTop, pageHeight + viewHeight);
+    photoMasks = scene.masks;
+    activeBanks = [];
+    if (collide && settings.interaction) {
+      for (const geometry of scene.surfaces) {
+        let bank = bankStore.get(geometry.element);
+        if (!bank) {
+          bank = makeBank(geometry);
+          bankStore.set(geometry.element, bank);
+        }
+        bank.geometry = geometry; // Page Y remains fixed across scroll frames.
+        activeBanks.push(bank);
+      }
+    }
+    sceneDirty = false;
+    lastScan = time;
+  }
+
+  function moveFlakes(dt, time) {
+    const top = viewportTop();
+    const lowest = top - viewHeight * 2.0;
+    const highest = top + viewHeight * 5.0;
+    for (const flake of flakes) {
+      if (flake.edge) {
+        const bank = flake.edge;
+        const ledge = bank.geometry;
+        const push = Math.abs(gravity.x) > 0.2 ? Math.sign(gravity.x) : flake.slide;
+        flake.x += push * (19 + flake.speed * 0.22) * settings.speed * dt;
+        flake.y = ledge.top - bankDepth(bank, flake.x) - flake.radius * 0.75;
+        flake.edgeAge += dt;
+        if (flake.x < ledge.left || flake.x > ledge.right || flake.edgeAge > 1.25) {
+          flake.edge = null;
+          flake.edgeAge = 0;
+        } else continue;
+      }
+
+      const previousY = flake.y;
+      const fall = flake.speed * settings.speed;
+      const gust = Math.sin(time * 0.00067 + flake.drift) * 12;
+      flake.x += (flake.wind + gust + gravity.x * fall * 0.9) * dt;
+      flake.y += gravity.y * fall * dt;
+
+      if (collide && settings.interaction && gravity.y > 0.25 &&
+          previousY < top + viewHeight + 70 && flake.y > top - 70 &&
+          flake.y > previousY) {
+        for (const bank of activeBanks) {
+          const ledge = bank.geometry;
+          if (ledge.top < top - 50 || ledge.top > top + viewHeight + 50) continue;
+          const surfaceY = ledge.top - bankDepth(bank, flake.x);
+          if (flake.x > ledge.left && flake.x < ledge.right &&
+              previousY + flake.radius <= surfaceY &&
+              flake.y + flake.radius >= surfaceY) {
+            deposit(bank, flake.x, random(0.7, 1.5));
+            flake.edge = bank;
+            flake.edgeAge = 0;
+            flake.y = surfaceY - flake.radius;
+            break;
+          }
+        }
+      }
+
+      if (flake.y > highest || flake.y < lowest ||
+          !Number.isFinite(flake.y)) {
+        Object.assign(flake, newWorldFlake());
+      }
+      if (flake.x < -30) flake.x = width + 30;
+      else if (flake.x > width + 30) flake.x = -30;
+    }
+  }
+
+  function moveDebris(dt) {
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      const chunk = chunks[i];
+      chunk.age += dt;
+      if (chunk.onEdge) {
+        chunk.x += chunk.vx * dt;
+        const g = chunk.bank.geometry;
+        chunk.y = g.top - bankDepth(chunk.bank, chunk.x) - chunk.radius * 0.58;
+        if (chunk.x <= g.left || chunk.x >= g.right || chunk.age > 3) {
+          chunk.onEdge = false;
+          chunk.vy = 30;
+          for (let j = 0; j < 9 && crumbs.length < MAX_CRUMB_COUNT; j++) {
+            crumbs.push({
+              x: chunk.x + random(-9, 9), y: chunk.y + random(-5, 5),
+              vx: chunk.vx * random(0.35, 1.2), vy: random(-65, 10),
+              radius: random(0.9, 3.6), life: random(0.6, 1.7)
+            });
+          }
+        }
+      } else {
+        chunk.x += chunk.vx * dt;
+        chunk.vy += (300 + Math.abs(gravity.y) * 140) * dt;
+        chunk.y += chunk.vy * dt;
+      }
+      if (chunk.age > 5.7 || chunk.y > viewportTop() + viewHeight * 2 ||
+          chunk.y < viewportTop() - viewHeight * 2 ||
+          chunk.x < -70 || chunk.x > width + 70) chunks.splice(i, 1);
+    }
+    for (let i = crumbs.length - 1; i >= 0; i--) {
+      const crumb = crumbs[i];
+      crumb.x += crumb.vx * dt;
+      crumb.vy += 420 * dt;
+      crumb.y += crumb.vy * dt;
+      crumb.life -= dt;
+      if (crumb.life <= 0 || crumb.y > viewportTop() + viewHeight * 2) {
+        crumbs.splice(i, 1);
+      }
+    }
+  }
+
+  function drawTile(tile) {
+    const { ctx, canvas, top } = tile;
+    // Translating the drawing context DOES NOT move its DOM canvas. CSS keeps
+    // the bitmap anchored in the document through async/inertial scrolling.
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, -top * pixelRatio);
+    ctx.clearRect(0, top, width, TILE_HEIGHT);
+    if (document.querySelector?.('.house-gallery-lightbox,[role="dialog"][aria-modal="true"]')) {
+      canvas.style.visibility = 'hidden';
+      return;
+    }
+
+    ctx.save();
+    const clipped = photoClip(ctx, photoMasks, width, TILE_HEIGHT, top);
+    for (const flake of flakes) {
+      if (flake.y < top - 20 || flake.y > top + TILE_HEIGHT + 20) continue;
+      if (!clipped && flakeOverPhoto(flake.x, flake.y, flake.radius, photoMasks)) continue;
+      paintFlake(ctx, flake, settings.shape);
+    }
+    for (const crumb of crumbs) {
+      if (crumb.y < top - 10 || crumb.y > top + TILE_HEIGHT + 10) continue;
+      if (!clipped && flakeOverPhoto(crumb.x, crumb.y, crumb.radius, photoMasks)) continue;
+      ctx.globalAlpha = clamp(crumb.life, 0, 0.92);
+      ctx.fillStyle = '#f4fdff';
+      ctx.beginPath();
+      ctx.arc(crumb.x, crumb.y, crumb.radius, 0, TAU);
+      ctx.fill();
+    }
+    for (const chunk of chunks) {
+      if (chunk.y < top - 50 || chunk.y > top + TILE_HEIGHT + 50) continue;
+      if (!clipped && flakeOverPhoto(chunk.x, chunk.y, chunk.radius, photoMasks)) continue;
+      paintChunk(ctx, chunk);
+    }
+    if (settings.interaction && collide) {
+      for (const bank of activeBanks) {
+        if (bank.geometry.top >= top - 48 && bank.geometry.top <= top + TILE_HEIGHT + 3) {
+          drawBank(ctx, bank);
+        }
+      }
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    if (!tile.ready) {
+      canvas.style.visibility = 'visible';
+      tile.ready = true;
+    }
+  }
+
+  function tick(time) {
+    if (removed) return;
+    frame = requestAnimationFrame(tick);
+    if (document.hidden || reduceMotion) {
+      previousTime = time; // Do not simulate minutes of motion after tab restore.
+      return;
+    }
+    if (!previousTime) {
+      previousTime = time;
+      syncScene(time);
+      syncTiles();
+      return;
+    }
+    const elapsed = time - previousTime;
+    if (elapsed < 1000 / fps) return;
+    const dt = clamp(elapsed / 1000, 0, 0.05);
+    previousTime = time;
+    syncScene(time);
+    syncTiles();
+    gravity.x += (targetGravity.x - gravity.x) * Math.min(1, dt * 2.6);
+    gravity.y += (targetGravity.y - gravity.y) * Math.min(1, dt * 2.6);
+    moveFlakes(dt, time);
+    if (collide && settings.interaction && gravity.y > 0.25) {
+      const upper = viewportTop() - 48, lower = viewportTop() + viewHeight + 48;
+      for (const bank of activeBanks) {
+        if (bank.geometry.top >= upper && bank.geometry.top <= lower) {
+          growBank(bank, dt, settings, chunks, gravity, crumbs);
+        }
+      }
+    }
+    moveDebris(dt);
+    const firstVisible = Math.floor(viewportTop() / TILE_HEIGHT);
+    const lastVisible = Math.floor((viewportTop() + viewHeight) / TILE_HEIGHT);
+    // A native-scroll safety buffer stays painted before the user swipes.
+    for (const tile of layers) {
+      if (!tile.ready || (tile.index >= firstVisible - 2 && tile.index <= lastVisible + 2)) {
+        drawTile(tile);
+      }
+    }
+  }
+
+  function update(next) {
+    if (removed) return;
+    const previousSize = settings.size;
+    const previousInteraction = settings.interaction;
+    settings = { ...settings, ...next };
+    if (previousSize !== settings.size) {
+      const ratio = (0.95 + settings.size * 0.78) / (0.95 + previousSize * 0.78);
+      for (const flake of flakes) flake.radius *= ratio;
+    }
+    syncFlakes();
+    if (!settings.interaction) {
+      activeBanks = [];
+      bankStore = new WeakMap();
+      chunks = [];
+      crumbs = [];
+      for (const flake of flakes) flake.edge = null;
+    } else if (!previousInteraction) {
+      sceneDirty = true;
+    }
+  }
+
+  function setGravity(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      targetGravity = { x: 0, y: 1 };
+      return;
+    }
+    const length = Math.hypot(x, y);
+    targetGravity = length >= 0.15
+      ? { x: x / length, y: y / length }
+      : { x: 0, y: 1 };
+  }
+  function setWind(value) {
+    const x = Number.isFinite(value) ? clamp(value * 0.75, -0.75, 0.75) : 0;
+    setGravity(x, Math.sqrt(1 - x * x));
+  }
+
+  window.addEventListener('resize', onResize, { passive: true });
+  window.addEventListener('scroll', onScroll, { passive: true });
+  resize();
+  if (!reduceMotion) frame = requestAnimationFrame(tick);
+  return {
+    update, setGravity, setWind,
+    destroy() {
+      removed = true;
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll);
+      for (const tile of layers) tile.canvas.remove();
+      layers.length = 0;
+      flakes = [];
+      chunks = [];
+      crumbs = [];
+      activeBanks = [];
+      photoMasks = [];
     }
   };
 }
