@@ -213,6 +213,36 @@ export function scrolledSnowY(y, delta, height, margin = 30) {
   return ((y - delta + margin) % span + span) % span - margin;
 }
 
+// Ordinary scrolls keep snow attached. A fast swipe must sustain speed over
+// significant distance; single noisy events and elastic boundary pulls do not count.
+export function classifySnowScroll(previous, position, time) {
+  const y = Number.isFinite(position) ? position : 0;
+  const now = Number.isFinite(time) ? time : 0;
+  const start = { position: y, time: now, fastTravel: 0, direction: 0, armed: true, lastShake: -Infinity };
+  if (!previous || !Number.isFinite(previous.position) || !Number.isFinite(previous.time)) {
+    return { state: start, shake: false, speed: 0, delta: 0 };
+  }
+  const delta = y - previous.position;
+  const elapsed = now - previous.time;
+  const lastShake = Number.isFinite(previous.lastShake) ? previous.lastShake : -Infinity;
+  if (elapsed < 6 || elapsed > 240 || !Number.isFinite(delta)) {
+    return { state: { ...start, lastShake }, shake: false, speed: 0, delta: 0 };
+  }
+  const direction = Math.abs(delta) >= 0.5 ? Math.sign(delta) : previous.direction;
+  const speed = Math.abs(delta) * 1000 / elapsed;
+  let armed = previous.armed !== false;
+  if ((previous.direction !== 0 && direction !== previous.direction) || speed < 750) armed = true;
+  const fastTravel = speed >= 1000
+    ? Math.min(600, (previous.direction === direction ? previous.fastTravel || 0 : 0) + Math.abs(delta))
+    : 0;
+  const shake = armed && speed >= 1700 && fastTravel >= 115 && now - lastShake >= 650;
+  return {
+    state: { position: y, time: now, fastTravel, direction,
+      armed: shake ? false : armed, lastShake: shake ? now : lastShake },
+    shake, speed, delta
+  };
+}
+
 const BANK_BINS = 19;
 const BANK_LIMIT = 38;
 const MAX_CHUNKS = 12;
@@ -292,6 +322,52 @@ function growBank(bank, dt, settings, chunks, gravity, crumbs) {
       radius: random(0.8, 2.8), life: random(0.65, 1.6)
     });
   }
+}
+
+// A rapid swipe knocks snow from visible ledges into actual falling chunks.
+// Existing bank objects survive, so regular snowfall gradually rebuilds them.
+export function shedSnowbanks(banks, pageTop, viewHeight, scrollDelta, chunks, crumbs, force = 1) {
+  if (!Array.isArray(banks) || !Array.isArray(chunks) || !Array.isArray(crumbs)) return 0;
+  const amount = 0.68 + 0.2 * clamp(Number.isFinite(force) ? force : 1, 0.5, 1);
+  const direction = scrollDelta > 0 ? 1 : -1;
+  let affected = 0;
+  for (const bank of banks) {
+    const g = bank?.geometry;
+    if (!g || g.right <= g.left || !bank.depths?.length ||
+        g.top < pageTop - 34 || g.top > pageTop + viewHeight + 34) continue;
+    const peak = Math.max(...bank.depths);
+    if (peak < 1.3) continue;
+    affected++;
+    const before = Array.from(bank.depths);
+    for (let i = 0; i < bank.depths.length; i++) bank.depths[i] *= 1 - amount;
+    bank.cooldown = Math.max(3, bank.cooldown || 0);
+    const sections = clamp(Math.ceil((g.right - g.left) / 150), 1, 3);
+    for (let i = 0; i < sections && chunks.length < MAX_CHUNKS; i++) {
+      const fraction = (i + 0.4 + Math.random() * 0.2) / sections;
+      const index = clamp(Math.floor(fraction * (BANK_BINS - 1)), 0, BANK_BINS - 1);
+      const depth = before[index];
+      if (depth < 3) continue;
+      chunks.push({
+        x: g.left + fraction * (g.right - g.left), y: g.top - depth,
+        radius: clamp(depth * 0.44, 2.3, 11),
+        vx: random(-56, 56) + direction * random(8, 38),
+        vy: random(-115, -30), bank, onEdge: false, age: 0, debrisAt: 0
+      });
+    }
+    for (let i = 0; i < 7 && crumbs.length < MAX_CRUMBS; i++) {
+      const fraction = Math.random();
+      const index = clamp(Math.floor(fraction * (BANK_BINS - 1)), 0, BANK_BINS - 1);
+      const depth = before[index];
+      if (depth < 1) continue;
+      crumbs.push({
+        x: g.left + fraction * (g.right - g.left), y: g.top - depth,
+        vx: random(-85, 85) + direction * random(8, 46),
+        vy: random(-130, -10), radius: random(0.7, clamp(depth * 0.28, 1.1, 3.8)),
+        life: random(0.9, 1.7)
+      });
+    }
+  }
+  return affected;
 }
 
 function drawBank(ctx, bank) {
@@ -679,8 +755,27 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   let frame = 0, previousTime = 0, lastScan = 0, removed = false, sceneDirty = true;
   let gravity = { x: 0, y: 1 }, targetGravity = { x: 0, y: 1 };
   const fps = 32; // Only snow FALLING updates at 32 fps; scroll never waits.
-  const onScroll = () => { if (!removed) { sceneDirty = true; syncTiles(); } };
-  const onResize = () => { if (!removed) resize(); };
+  const clock = () => window.performance?.now?.() ?? Date.now();
+  let scrollMotion = null;
+  const onScroll = () => {
+    if (removed) return;
+    sceneDirty = true;
+    syncTiles();
+    const movement = classifySnowScroll(scrollMotion, viewportTop(), clock());
+    scrollMotion = movement.state;
+    if (!movement.shake || !collide || !settings.interaction || document.hidden) return;
+    syncScene(movement.state.time);
+    shedSnowbanks(
+      activeBanks, viewportTop(), viewHeight, movement.delta,
+      chunks, crumbs, clamp(movement.speed / 3200, 0.5, 1)
+    );
+  };
+  const onResize = () => {
+    if (removed) return;
+    resize();
+    // Safari's disappearing address bar must not trigger a fake shake.
+    scrollMotion = classifySnowScroll(null, viewportTop(), clock()).state;
+  };
 
   const viewportTop = () => {
     const y = Number.isFinite(window.scrollY) ? window.scrollY :
@@ -1031,6 +1126,7 @@ export function createDocumentSnowfallStage(root, initialSettings = DEFAULT_SNOW
   window.addEventListener('resize', onResize, { passive: true });
   window.addEventListener('scroll', onScroll, { passive: true });
   resize();
+  scrollMotion = classifySnowScroll(null, viewportTop(), clock()).state;
   if (!reduceMotion) frame = requestAnimationFrame(tick);
   return {
     update, setGravity, setWind,
