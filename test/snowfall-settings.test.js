@@ -7,7 +7,8 @@ import {
 } from '../public/snowfall-config.js';
 import {
   gravityFromOrientation,
-  windFromOrientation
+  windFromOrientation,
+  createSnowfallStage
 } from '../public/snowfall-engine.js';
 
 test('snowfall is disabled on first deploy and does not require migrations', () => {
@@ -65,4 +66,63 @@ test('invalid orientation data safely uses default gravity', () => {
   assert.deepEqual(gravityFromOrientation(null, undefined), { x: 0, y: 1 });
   assert.equal(windFromOrientation(null, undefined), 0);
   assert.ok(Math.abs(windFromOrientation(0, 90, 0)) <= 1);
+});
+
+test('canvas effect is self-contained and cleans up resize/scroll listeners', () => {
+  const globals = ['window', 'document', 'ResizeObserver', 'requestAnimationFrame', 'cancelAnimationFrame'];
+  const previous = new Map(globals.map(key => [key, globalThis[key]]));
+  const listeners = new Map();
+  const frames = new Map();
+  let sequence = 0;
+  let drawCount = 0;
+  try {
+    globalThis.window = {
+      devicePixelRatio: 2,
+      matchMedia: () => ({ matches: false }),
+      addEventListener(name, fn) { listeners.set(name, fn); },
+      removeEventListener(name) { listeners.delete(name); }
+    };
+    globalThis.document = { hidden: false, querySelectorAll: () => [] };
+    globalThis.ResizeObserver = class {
+      observe() {}
+      disconnect() {}
+    };
+    globalThis.requestAnimationFrame = callback => {
+      const id = ++sequence;
+      frames.set(id, callback);
+      return id;
+    };
+    globalThis.cancelAnimationFrame = id => frames.delete(id);
+    const ctx = {
+      setTransform() {}, clearRect() { drawCount++; },
+      beginPath() {}, arc() {}, fill() {}, stroke() {},
+      moveTo() {}, lineTo() {}, closePath() {}
+    };
+    const canvas = {
+      width: 0, height: 0,
+      getContext: () => ctx,
+      getBoundingClientRect: () => ({ width: 480, height: 260 })
+    };
+    const settings = { ...DEFAULT_SNOWFALL_SETTINGS, enabled: true };
+    const painter = createSnowfallStage(canvas, settings, { preview: true });
+    assert.equal(canvas.width, 960);
+    assert.equal(canvas.height, 520);
+    assert.ok(listeners.has('resize'));
+    painter.setGravity(1, 0);
+    painter.update({ ...settings, count: 100, size: 4, shape: 'crystal' });
+    for (const time of [20, 60, 100]) {
+      const [id, callback] = frames.entries().next().value;
+      frames.delete(id);
+      callback(time);
+    }
+    assert.ok(drawCount > 0);
+    painter.destroy();
+    assert.equal(frames.size, 0);
+    assert.equal(listeners.size, 0);
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
 });
