@@ -13,6 +13,22 @@ export function windFromOrientation(beta, gamma, screenAngle = 0) {
   return clamp((gamma * Math.cos(angle) - beta * Math.sin(angle)) / 46, -1, 1);
 }
 
+// Project the direction of earthly gravity into the SCREEN PLANE. On a
+// tilted/upright phone snow can move sideways or even toward the top edge.
+// On a flat screen the projection is weak; use conventional downward snowfall.
+export function gravityFromOrientation(beta, gamma, screenAngle = 0) {
+  if (!Number.isFinite(beta) || !Number.isFinite(gamma)) return { x: 0, y: 1 };
+  const radians = Math.PI / 180;
+  const gx = Math.sin(clamp(gamma, -90, 90) * radians) * 0.93;
+  const gy = Math.sin(clamp(beta, -180, 180) * radians);
+  const angle = (Number(screenAngle) || 0) * radians;
+  const x = gx * Math.cos(angle) - gy * Math.sin(angle);
+  const y = gx * Math.sin(angle) + gy * Math.cos(angle);
+  const magnitude = Math.hypot(x, y);
+  if (magnitude < 0.22) return { x: 0, y: 1 };
+  return { x: x / magnitude, y: y / magnitude };
+}
+
 function makeFlake(width, height, settings, startAnywhere = false) {
   return {
     x: random(-12, width + 12),
@@ -99,14 +115,15 @@ function visiblePhotoEdges(width, height) {
 // no new dependencies, and a bounded number of particles on every device.
 export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_SETTINGS, options = {}) {
   const ctx = canvas.getContext('2d', { alpha: true });
-  if (!ctx) return { update() {}, setWind() {}, destroy() {} };
+  if (!ctx) return { update() {}, setWind() {}, setGravity() {}, destroy() {} };
 
   const preview = options.preview === true;
   const collide = options.collide === true && !preview;
   const reduceMotion = typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   let settings = { ...DEFAULT_SNOWFALL_SETTINGS, ...initialSettings };
   let width = 0, height = 0, frame = 0, lastFrame = 0, lastEdges = 0, removed = false;
-  let flakes = [], edges = [], wind = 0, targetWind = 0;
+  let flakes = [], edges = [];
+  let gravity = { x: 0, y: 1 }, desiredGravity = { x: 0, y: 1 };
   const maxFps = preview ? 30 : width < 700 ? 32 : 40;
 
   function resize() {
@@ -142,7 +159,7 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
     if (flake.edge) {
       flake.edgeAge += dt;
       const speed = (27 + flake.speed * 0.34) * settings.speed;
-      const push = Math.abs(wind) > 0.18 ? Math.sign(wind) : flake.slide;
+      const push = Math.abs(gravity.x) > 0.18 ? Math.sign(gravity.x) : flake.slide;
       flake.x += push * speed * dt;
       flake.y = flake.edge.top - flake.radius * 0.72;
       if (flake.x < flake.edge.left || flake.x > flake.edge.right || flake.edgeAge > 1.8) {
@@ -155,8 +172,8 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
     const previousY = flake.y;
     const fall = flake.speed * settings.speed;
     const gust = Math.sin(time * 0.00067 + flake.drift) * 12;
-    flake.x += (flake.wind + gust + wind * fall * 0.65) * dt;
-    flake.y += fall * dt;
+    flake.x += (flake.wind + gust + gravity.x * fall * 0.9) * dt;
+    flake.y += gravity.y * fall * dt;
 
     if (settings.interaction && collide && edges.length &&
         previousY + flake.radius < flake.y + flake.radius) {
@@ -175,6 +192,8 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
     const margin = 22;
     if (flake.y > height + margin) {
       Object.assign(flake, makeFlake(width, height, settings));
+    } else if (flake.y < -margin && gravity.y < -0.05) {
+      flake.y = height + margin;
     } else if (flake.x < -margin) {
       flake.x = width + margin;
     } else if (flake.x > width + margin) {
@@ -198,7 +217,8 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
       edges = visiblePhotoEdges(width, height);
       lastEdges = time;
     }
-    wind += (targetWind - wind) * Math.min(1, dt * 2.6);
+    gravity.x += (desiredGravity.x - gravity.x) * Math.min(1, dt * 2.6);
+    gravity.y += (desiredGravity.y - gravity.y) * Math.min(1, dt * 2.6);
     ctx.clearRect(0, 0, width, height);
     for (const flake of flakes) {
       move(flake, dt, time);
@@ -223,8 +243,20 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
     }
   }
 
+  function setGravity(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      desiredGravity = { x: 0, y: 1 };
+      return;
+    }
+    const length = Math.hypot(x, y);
+    desiredGravity = length >= 0.15
+      ? { x: x / length, y: y / length }
+      : { x: 0, y: 1 };
+  }
+
   function setWind(value) {
-    targetWind = Number.isFinite(value) ? clamp(value, -1, 1) : 0;
+    const x = Number.isFinite(value) ? clamp(value * 0.75, -0.75, 0.75) : 0;
+    setGravity(x, Math.sqrt(1 - x * x));
   }
 
   const onResize = () => resize();
@@ -235,6 +267,7 @@ export function createSnowfallStage(canvas, initialSettings = DEFAULT_SNOWFALL_S
   return {
     update,
     setWind,
+    setGravity,
     destroy() {
       removed = true;
       cancelAnimationFrame(frame);
