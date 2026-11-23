@@ -1,5 +1,5 @@
 import { normalizeSnowfallSettings } from './snowfall-config.js';
-import { createSnowfallStage, windFromOrientation } from './snowfall-engine.js';
+import { createSnowfallStage, gravityFromOrientation } from './snowfall-engine.js';
 
 // Public seasonal effect. If the settings API is unavailable, nothing is shown.
 // Never intercept booking, calendar, or navigation events.
@@ -16,7 +16,8 @@ let orientationPermissionDismissed = false;
 function onOrientation(event) {
   if (!stage || !settings?.tilt) return;
   const angle = screen.orientation?.angle || window.orientation || 0;
-  stage.setWind(windFromOrientation(event.beta, event.gamma, angle));
+  const gravity = gravityFromOrientation(event.beta, event.gamma, angle);
+  stage.setGravity(gravity.x, gravity.y);
 }
 
 function startOrientation() {
@@ -28,7 +29,7 @@ function startOrientation() {
 function stopOrientation() {
   if (orientationListening) window.removeEventListener('deviceorientation', onOrientation);
   orientationListening = false;
-  stage?.setWind(0);
+  stage?.setGravity(0, 1);
 }
 
 function hideTiltChip() {
