@@ -218,11 +218,26 @@ function updateManualBlocks(calendar) {
   list.hidden = collapsed;
 }
 
+function addOwnerPreviewLink(memberSection) {
+  const panel = memberSection.closest('[role="tabpanel"]');
+  const intro = panel?.querySelector('.pageintro');
+  if (!intro || intro.querySelector('[data-owner-dark-side]')) return;
+  const link = document.createElement('a');
+  link.href = '/admin/dark-side';
+  link.dataset.ownerDarkSide = '';
+  link.className = 'primary';
+  link.textContent = '🌘 Тёмная сторона ↗';
+  link.setAttribute('aria-label', 'Открыть закрытый предпросмотр нового сайта');
+  link.style.cssText = 'display:inline-flex;align-items:center;align-self:flex-start;justify-content:center;max-width:100%;margin-top:12px;text-decoration:none;padding:12px 18px;border-radius:999px;background:#20271e;color:#d8fb45;border:1px solid #77894e;font-weight:700;';
+  intro.append(link);
+}
+
 function update() {
   updateTelegramSettings();
   updateMailSettings();
   const memberSection = document.querySelector('.member-section');
   if (!memberSection) return;
+  try { addOwnerPreviewLink(memberSection); } catch (error) { console.warn('Owner preview link unavailable', error); }
   installStyles();
   updateMembers(memberSection);
   updateBookings();
