@@ -1,6 +1,5 @@
 import express from 'express';
 import { handlePricingAction } from './pricing-updates.js';
-import { isConfiguredPricing } from './public/pricing-state.js';
 import { DEFAULT_SNOWFALL_SETTINGS, normalizeSnowfallSettings } from './public/snowfall-config.js';
 import { saveBirthdayRecord, deleteBirthdayRecord } from './birthday-clients.js';
 import { applyAvailabilityChange } from './calendar-availability.js';
@@ -128,12 +127,7 @@ async function memberAccount(member){
  const today=new Date().toISOString().slice(0,10);
  return {loggedIn:true,member:{id:member.id,name:member.name,phone:member.phone,code:member.code,balance:balance.rows[0].balance},bookings:bookings.rows,invitedGuests:invited.rows.map(guest=>({...guest,statusLabel:guest.status==='request'?'Бронь создана':guest.status==='waitlist'?'Лист ожидания':guest.status==='confirmed'?(guest.arrival>today?'Ожидание заезда':'Бронирование подтверждено'):guest.status==='completed'?(guest.earned_points>0?'Баллы начислены':'Заезд состоялся'):'Бронь отменена'}))};
 }
-async function pricing(queryable=pool){
- const r=await queryable.query("SELECT value FROM settings WHERE key='pricing'");
- const current=r.rows[0]?.value;
- if(!isConfiguredPricing(current))throw Object.assign(new Error('Тарифы не настроены'),{status:503,code:'PRICING_NOT_CONFIGURED'});
- return current;
-}
+async function pricing(queryable=pool){ const r=await queryable.query("SELECT value FROM settings WHERE key='pricing'"); return r.rows[0]?.value || {weekday:23000,friday:30000,saturday:34000,dates:{}}; }
 function stayPrice(a,b,g,p,firstReferral=false){ let total=0; for(let d=new Date(a+'T00:00:00Z'),end=new Date(b+'T00:00:00Z');d<end;d.setUTCDate(d.getUTCDate()+1)){ const ds=d.toISOString().slice(0,10); const dow=d.getUTCDay(); let base=Number(p.dates?.[ds] ?? (dow===5?p.friday:dow===6?p.saturday:p.weekday)); total += base + Math.max(0,Number(g)-12)*1000 - (firstReferral?2000:0); } return Math.max(0,total); }
 async function balances(){ const q=await pool.query(`SELECT m.id, COALESCE(SUM(CASE WHEN l.kind='earned' THEN l.points WHEN l.kind IN ('deducted','reserved','spent') THEN -l.points WHEN l.kind='release' THEN l.points ELSE 0 END),0)::int balance FROM members m LEFT JOIN point_ledger l ON l.member_id=m.id GROUP BY m.id`); return Object.fromEntries(q.rows.map(x=>[x.id,x.balance])); }
 async function invitedGuests(memberId){const q=await pool.query(`SELECT name,COUNT(*) FILTER(WHERE status<>'cancelled' AND archived=false)::int stays,COUNT(*) FILTER(WHERE status='completed' AND archived=false)::int completed_stays,COALESCE(SUM(nights) FILTER(WHERE status='completed' AND archived=false),0)::int completed_nights FROM bookings WHERE referrer=$1 GROUP BY name ORDER BY name`,[memberId]);return q.rows;}
@@ -256,13 +250,7 @@ app.post('/api/admin/snowfall',async(req,res)=>{
   return res.status(503).json({error:'Не удалось сохранить снегопад. Настройки не изменены.'});
  }
 });
-app.get('/api/pricing', async(req,res,next)=>{
- res.setHeader('Cache-Control','no-store');
- try{return res.json(await pricing());}catch(error){
-  if(error.code==='PRICING_NOT_CONFIGURED')return res.status(503).json({error:'Тарифы не настроены',code:'pricing_not_configured'});
-  return next(error);
- }
-});
+app.get('/api/pricing', async(req,res)=>res.json(await pricing()));
 app.get('/api/availability', async(req,res)=>{ const q=await pool.query(`SELECT arrival::text,departure::text FROM calendar_blocks UNION SELECT arrival::text,departure::text FROM bookings WHERE archived=false AND status IN ('confirmed','completed') AND dates_released=false UNION SELECT date::text AS arrival,(date+1)::text AS departure FROM rewards WHERE kind='stay' AND status IN ('approved','issued') AND date IS NOT NULL UNION SELECT arrival::text,departure::text FROM avito_calendar_blocks ORDER BY arrival`); res.setHeader('Cache-Control','no-store'); res.json({ranges:q.rows}); });
 
 app.post('/api/members',async(req,res)=>{
@@ -550,7 +538,7 @@ app.use((error,req,res,next)=>{
  const connectionError=error.code?.startsWith('08')||['ECONNREFUSED','ECONNRESET','ETIMEDOUT','57P01'].includes(error.code);
  const status=error.status||(error.code==='23505'?409:connectionError?503:500);
  console.error('Request failed',req.method,req.path,error.code||error.name);
- const message=error.code==='PRICING_NOT_CONFIGURED'?'Актуальные цены временно недоступны':status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
+ const message=status===503?'Database is unavailable':status===409?'Conflict':status<500?(error.message||'Invalid request'):'Internal server error';
  res.status(status).json({error:message,...(error.retryAfter?{retryAfter:error.retryAfter}:{})});
 });
 app.get('/',async(req,res,next)=>{try{
