@@ -1,4 +1,5 @@
 import express from 'express';
+import { mountOwnerPreview } from './owner-preview/route.js';
 import { handlePricingAction } from './pricing-updates.js';
 import { DEFAULT_SNOWFALL_SETTINGS, normalizeSnowfallSettings } from './public/snowfall-config.js';
 import { saveBirthdayRecord, deleteBirthdayRecord } from './birthday-clients.js';
@@ -529,6 +530,9 @@ app.post('/api/telegram/webhook',async(req,res,next)=>{
  }
 });
 setInterval(()=>sendPending().catch(error=>console.error('Telegram outbox retry failed',error.code||error.name)),60*1000).unref();
+
+// Isolated owner-only design preview; public storefront is unchanged.
+mountOwnerPreview(app, isAdmin);
 
 // Protected API prepared for a future ChatGPT/MCP connector.
 app.get('/admin-api/health',(req,res)=>{if(!requireAdmin(req,res))return;res.json({ok:true,service:'dom-na-hvoinoy'});});
